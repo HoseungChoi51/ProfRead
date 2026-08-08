@@ -1,0 +1,1 @@
+import{defineConfig}from'vitest/config';export default defineConfig({test:{fileParallelism:false,setupFiles:['./vitest.setup.ts'],include:['apps/server/src/**/*.test.ts','packages/shared/src/**/*.test.ts'],coverage:{include:['apps/server/src/**/*.ts','packages/shared/src/**/*.ts'],exclude:['**/*.test.ts']}}});

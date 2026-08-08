@@ -1,14 +1,15 @@
 # Co-reader
 
-Co-reader is a planned private, self-hosted web app for reading imported HTML
+Co-reader is a private, self-hosted web app for reading imported HTML
 articles with context-aware LLM explanations, recursive follow-up discussions,
 curated annotations, and durable study artifacts.
 
 ## Status
 
-This repository is an implementation handoff. It currently contains the
-decision-complete product and engineering specification; application code has
-not been scaffolded yet.
+The application is implemented as an npm workspace with a Fastify/SQLite API,
+React/Vite reader, shared validated contracts, and a Docker deployment. It
+supports safe HTML/ZIP import, durable margin discussions, provider routing,
+curated knowledge artifacts, search, and HTML/Markdown/PDF export.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for the full
 architecture, interaction contracts, milestones, and acceptance tests.
@@ -34,6 +35,17 @@ architecture, interaction contracts, milestones, and acceptance tests.
   enhanced OpenRouter adapter
 - Docker deployment behind HTTPS or a private VPN
 
-The implementation plan is organized as three vertical milestones so the first
-milestone produces a usable reader before provider routing and the recursive
-knowledge layer are added.
+## Development
+
+Requires Node.js 24 or newer.
+
+```sh
+npm install
+cp .env.example .env
+npm run dev
+```
+
+The web app runs on port 4311 in development and proxies the API on port 4310.
+Run `npm test`, `npm run typecheck`, and `npm run build` before deployment. See
+[deployment and recovery](docs/deployment.md) for Docker, backup, and restore
+instructions.

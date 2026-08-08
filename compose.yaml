@@ -1,0 +1,15 @@
+services:
+  co-reader:
+    build: .
+    restart: unless-stopped
+    environment:
+      CO_READER_PASSWORD: ${CO_READER_PASSWORD:?set CO_READER_PASSWORD}
+      CO_READER_SESSION_SECRET: ${CO_READER_SESSION_SECRET:?set CO_READER_SESSION_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - co-reader-data:/data
+    ports:
+      - "127.0.0.1:4310:4310"
+volumes:
+  co-reader-data:
