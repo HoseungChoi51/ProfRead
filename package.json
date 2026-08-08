@@ -1,0 +1,26 @@
+{
+  "name": "co-reader",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @co-reader/server\" \"npm run dev -w @co-reader/web\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.10.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.0",
+    "fflate": "^0.8.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2",
+    "vitest": "^4.0.8"
+  },
+  "engines": { "node": ">=22" }
+}
