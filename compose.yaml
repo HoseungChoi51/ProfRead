@@ -2,6 +2,7 @@ services:
   co-reader:
     build: .
     restart: unless-stopped
+    init: true
     environment:
       CO_READER_PASSWORD: ${CO_READER_PASSWORD:?set CO_READER_PASSWORD}
       CO_READER_SESSION_SECRET: ${CO_READER_SESSION_SECRET:?set CO_READER_SESSION_SECRET}
@@ -11,5 +12,12 @@ services:
       - co-reader-data:/data
     ports:
       - "127.0.0.1:4310:4310"
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 volumes:
   co-reader-data:
+    name: co-reader-data
