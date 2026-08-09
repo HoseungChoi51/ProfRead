@@ -7,6 +7,7 @@ import { schema } from './schema.js';
 mkdirSync(config.dataDir, { recursive: true });
 mkdirSync(join(config.dataDir, 'documents'), { recursive: true });
 mkdirSync(join(config.dataDir, 'exports'), { recursive: true });
+mkdirSync(join(config.dataDir, 'generated'), { recursive: true });
 export const db = new DatabaseSync(join(config.dataDir, 'co-reader.sqlite'));
 db.exec(schema);
 let blockColumns=db.prepare('PRAGMA table_info(blocks)').all() as Array<{name:string;pk:number}>;
@@ -22,6 +23,7 @@ db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(2,?)').ru
 db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(3,?)').run(new Date().toISOString());
 db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(4,?)').run(new Date().toISOString());
 db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(5,?)').run(new Date().toISOString());
+db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(6,?)').run(new Date().toISOString());
 
 export function now(): string { return new Date().toISOString(); }
 export function rows<T>(sql: string, ...params: any[]): T[] { return db.prepare(sql).all(...params) as T[]; }

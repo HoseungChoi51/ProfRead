@@ -6,6 +6,12 @@ async function* sse(response: Response): AsyncIterable<{event?:string;data:strin
   while(true){const {done,value}=await reader.read();buffer+=decoder.decode(value??new Uint8Array(),{stream:!done});const chunks=buffer.split(/\r?\n\r?\n/);buffer=chunks.pop()??'';for(const chunk of chunks){let event:string|undefined;const data:string[]=[];for(const line of chunk.split(/\r?\n/)){if(line.startsWith('event:'))event=line.slice(6).trim();if(line.startsWith('data:'))data.push(line.slice(5).trimStart());}if(data.length)yield {...(event?{event}:{}),data:data.join('\n')};}if(done)break;}
 }
 const authHeaders=(key:string)=>({'content-type':'application/json','authorization':`Bearer ${key}`});
+export async function generateImageWithResponses(apiKey:string,modelId:string,prompt:string,baseUrl='https://api.openai.com/v1',signal?:AbortSignal):Promise<string>{
+  const response=await fetch(`${baseUrl}/responses`,{method:'POST',headers:authHeaders(apiKey),body:JSON.stringify({model:modelId,input:prompt,tools:[{type:'image_generation'}],tool_choice:{type:'image_generation'}}),...(signal?{signal}:{})});
+  if(!response.ok)throw new Error(`Image generation returned ${response.status}: ${await response.text()}`);
+  const result=await response.json() as {output?:Array<{type?:string;result?:string}>};const image=result.output?.find(item=>item.type==='image_generation_call')?.result;
+  if(!image)throw new Error('Image generation completed without returning image data');return image;
+}
 export class ResponsesProvider implements ModelProvider {
   constructor(private readonly apiKey:string,private readonly models:ModelDefinition[],private readonly baseUrl='https://api.openai.com/v1'){}
   async listModels(){return this.models;} estimateContext(r:ProviderRunRequest){return Math.ceil(r.messages.reduce((n,m)=>n+m.content.length,0)/4);}

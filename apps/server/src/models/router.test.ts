@@ -1,11 +1,11 @@
 import { describe,expect,it } from 'vitest';
 import type { ModelDefinition,ModelProfile } from '@co-reader/shared';
 import { deterministicProfile,route,toolsFor } from './router.js';
-const capabilities={text:true,vision:true,structuredOutput:true,functionTools:true,providerWebSearch:true,reasoningControl:false,streaming:true};
+const capabilities={text:true,vision:true,structuredOutput:true,functionTools:true,providerWebSearch:true,reasoningControl:false,imageGeneration:true,streaming:true};
 const models:ModelDefinition[]=[{id:'fast',providerId:'p',label:'Fast',protocol:'chat-completions',contextWindow:10000,maxOutput:1000,capabilities,priority:10,enabled:true},{id:'large',providerId:'p',label:'Large',protocol:'chat-completions',contextWindow:100000,maxOutput:4000,capabilities,priority:20,enabled:true}];
 const profiles:ModelProfile[]=['quick','standard','deep','vision','research','digest'].map(name=>({name:name as ModelProfile['name'],modelIds:name==='deep'?['large']:['fast','large']}));
 describe('router',()=>{
   it('applies deterministic action rules',()=>{expect(deterministicProfile({action:'define',input:'entropy',hasVisual:false,webEnabled:false,estimatedTokens:1})).toBe('quick');expect(deterministicProfile({action:'ask',input:'Why? How?',hasVisual:false,webEnabled:false,estimatedTokens:1})).toBe('deep');expect(deterministicProfile({action:'ask',input:'x'.repeat(241),hasVisual:false,webEnabled:false,estimatedTokens:1})).toBe('deep');expect(deterministicProfile({action:'ask',input:'look',hasVisual:true,webEnabled:false,estimatedTokens:1})).toBe('vision');});
   it('filters by context fit and respects override',()=>{expect(route({action:'ask',input:'short',hasVisual:false,webEnabled:false,estimatedTokens:9500},models,profiles).model.id).toBe('large');expect(route({action:'ask',input:'short',hasVisual:false,webEnabled:false,estimatedTokens:100,modelOverride:'fast'},models,profiles).reason).toBe('manual override');});
-  it('strictly scopes tools',()=>{expect(toolsFor({action:'explain',webEnabled:false})).toEqual([]);expect(toolsFor({action:'visualize',webEnabled:false})).toEqual(['render_diagram']);expect(toolsFor({action:'research',webEnabled:false})).toEqual(['provider_web_search']);});
+  it('strictly scopes tools',()=>{expect(toolsFor({action:'explain',webEnabled:false})).toEqual([]);expect(toolsFor({action:'visualize',webEnabled:false})).toEqual(['render_diagram']);expect(toolsFor({action:'visual-recap',webEnabled:false})).toEqual(['image_generation']);expect(toolsFor({action:'research',webEnabled:false})).toEqual(['provider_web_search']);});
 });

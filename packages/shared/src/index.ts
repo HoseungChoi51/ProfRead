@@ -5,7 +5,7 @@ export const capabilitySchema = z.object({
   text: z.boolean().default(true), vision: z.boolean().default(false),
   structuredOutput: z.boolean().default(false), functionTools: z.boolean().default(false),
   providerWebSearch: z.boolean().default(false), reasoningControl: z.boolean().default(false),
-  streaming: z.boolean().default(true),
+  imageGeneration: z.boolean().default(false), streaming: z.boolean().default(true),
 });
 export const modelDefinitionSchema = z.object({
   id: z.string(), providerId: z.string(), label: z.string(), protocol: protocolSchema,
@@ -17,6 +17,11 @@ export type ModelDefinition = z.infer<typeof modelDefinitionSchema>;
 export const profileNameSchema = z.enum(['quick', 'standard', 'deep', 'vision', 'research', 'digest']);
 export const modelProfileSchema = z.object({ name: profileNameSchema, modelIds: z.array(z.string()).min(1) });
 export type ModelProfile = z.infer<typeof modelProfileSchema>;
+
+export const taskActionSchema = z.enum(['define','explain','eli14','ask','visualize','research','summarize','tldr','half-page','visual-recap','compact']);
+export type TaskAction = z.infer<typeof taskActionSchema>;
+export const taskModelRouteSchema = z.object({ action: taskActionSchema, modelId: z.string().min(1) });
+export type TaskModelRoute = z.infer<typeof taskModelRouteSchema>;
 
 export const anchorSelectorSchema = z.object({
   blockId: z.string().min(1), exact: z.string(), prefix: z.string().default(''), suffix: z.string().default(''),
@@ -49,6 +54,7 @@ export const visualRecapSchema = z.object({
   sections: z.array(z.object({ title: z.string().max(120), summary: z.string().max(1000), sourceRefs: z.array(z.string().max(200)).max(12) })).max(6),
   relationships: z.array(z.object({ from: z.string().max(120), to: z.string().max(120), relation: z.string().max(240) })).max(20),
   takeaways: z.array(z.string().max(500)).max(12), openQuestions: z.array(z.string().max(500)).max(12), sourceRefs: z.array(z.string().max(200)).max(40),
+  image: z.object({ url: z.string().regex(/^\/api\/generated\/[A-Za-z0-9_-]+\.png$/), alt: z.string().min(1).max(500), modelId: z.string().min(1) }).optional(),
 });
 
 export type RunEvent =

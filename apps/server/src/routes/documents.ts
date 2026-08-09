@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
@@ -7,6 +8,9 @@ import { anchorSelectorSchema } from '@co-reader/shared';
 import { db, now, row, rows } from '../db/index.js';
 import { importSource } from '../ingest/index.js';
 import { ensureContexts } from '../models/context-jobs.js';
+import { config } from '../config.js';
+
+const responsiveReaderStyle='<style id="co-reader-responsive">html{overflow-x:hidden}body{box-sizing:border-box!important;width:min(calc(100% - clamp(2rem,6vw,6rem)),1200px)!important;max-width:none!important;margin:clamp(1.5rem,4vw,3rem) auto!important;padding:0!important}body *{box-sizing:border-box}pre,table{max-width:100%;overflow:auto}</style>';
 
 export function registerDocumentRoutes(app: FastifyInstance): void {
   app.get('/api/documents', async () => rows(`SELECT d.*, v.id version_id, v.version, v.token_estimate,
@@ -34,7 +38,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   app.get('/api/versions/:id/content', async (request, reply) => {
     const version = row<{ sanitized_html_path:string }>('SELECT sanitized_html_path FROM document_versions WHERE id=?', (request.params as { id:string }).id);
     if (!version) return reply.code(404).send('Not found');
-    const nonce = randomBytes(18).toString('base64url'); const html = (await readFile(version.sanitized_html_path, 'utf8')).replaceAll('__CO_READER_NONCE__', nonce);
+    const nonce = randomBytes(18).toString('base64url'); const html = (await readFile(version.sanitized_html_path, 'utf8')).replace('</head>',`${responsiveReaderStyle}</head>`).replaceAll('__CO_READER_NONCE__', nonce);
     return reply.header('content-type','text/html; charset=utf-8').header('cache-control','private, no-store')
       .header('content-security-policy', `sandbox allow-scripts; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html);
   });
@@ -44,6 +48,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     if (!asset) return reply.code(404).send({ error: 'Asset not found' });
     return reply.header('content-type', asset.mime_type).header('x-content-type-options','nosniff').header('cache-control','private, max-age=31536000, immutable').header('etag',`"${asset.content_hash}"`).send(await readFile(asset.storage_path));
   });
+  app.get('/api/generated/:imageId.png',async(request,reply)=>{const imageId=(request.params as {imageId:string}).imageId;if(!/^[A-Za-z0-9_-]+$/.test(imageId))return reply.code(400).send({error:'Invalid image ID'});try{return reply.header('content-type','image/png').header('cache-control','private, max-age=31536000, immutable').send(await readFile(join(config.dataDir,'generated',`${imageId}.png`)))}catch{return reply.code(404).send({error:'Generated image not found'})}});
   app.get('/api/documents/:id/blocks', async request => rows('SELECT b.* FROM blocks b JOIN document_versions v ON v.id=b.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?) ORDER BY ordinal', (request.params as {id:string}).id, (request.params as {id:string}).id));
   app.get('/api/documents/:id/highlights',async request=>rows(`SELECT h.id,h.checked,h.color,h.note,a.id anchor_id,a.block_id,a.exact_quote FROM highlights h JOIN anchors a ON a.id=h.anchor_id JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?)`,(request.params as {id:string}).id,(request.params as {id:string}).id));
   app.get('/api/versions/:id/jobs',async request=>rows('SELECT id,kind,status,progress,error,updated_at FROM background_jobs WHERE document_version_id=? ORDER BY created_at DESC',(request.params as {id:string}).id));
