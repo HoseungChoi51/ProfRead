@@ -49,3 +49,13 @@ The web app runs on port 4311 in development and proxies the API on port 4310.
 Run `npm test`, `npm run typecheck`, and `npm run build` before deployment. See
 [deployment and recovery](docs/deployment.md) for Docker, backup, and restore
 instructions.
+
+## Prompt templates
+
+Source-controlled prompt defaults and their descriptions live in
+[`apps/server/src/models/prompts.ts`](apps/server/src/models/prompts.ts). The
+library's **AI settings → Prompt templates** panel can override each component
+without rebuilding the application. The editor lists the allowed
+`{{variables}}`, validates required and unknown placeholders, and can reset any
+override to its source default. Overrides are stored in SQLite and therefore
+follow the normal `afterdraft-data` backup and restore contract.

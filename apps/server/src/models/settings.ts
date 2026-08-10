@@ -12,6 +12,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { db, row, rows } from '../db/index.js';
+import { promptTemplateSettings, resetPromptTemplate, savePromptTemplate } from './prompts.js';
 
 const gpt56Capabilities={text:true,vision:true,structuredOutput:true,functionTools:true,providerWebSearch:true,reasoningControl:true,imageGeneration:true,streaming:true};
 const defaultProfiles:Record<ModelProfile['name'],string[]>= {
@@ -57,6 +58,25 @@ export function registerSettingsRoutes(app:FastifyInstance):void {
   app.put('/api/settings/models/:id',async(request,reply)=>{const input={...(request.body as object),id:(request.params as {id:string}).id};const parsed=modelDefinitionSchema.safeParse(input);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const m=parsed.data;db.prepare(`INSERT INTO model_definitions(id,provider_id,label,protocol,context_window,max_output,capabilities_json,priority,enabled) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,label=excluded.label,protocol=excluded.protocol,context_window=excluded.context_window,max_output=excluded.max_output,capabilities_json=excluded.capabilities_json,priority=excluded.priority,enabled=excluded.enabled`).run(m.id,m.providerId,m.label,m.protocol,m.contextWindow,m.maxOutput,JSON.stringify(capabilitySchema.parse(m.capabilities)),m.priority,m.enabled?1:0);return {ok:true};});
   app.put('/api/settings/profiles/:name',async(request,reply)=>{const parsed=modelProfileSchema.safeParse({...(request.body as object),name:(request.params as {name:string}).name});if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});db.prepare(`INSERT INTO model_profiles(name,model_ids_json) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET model_ids_json=excluded.model_ids_json`).run(parsed.data.name,JSON.stringify(parsed.data.modelIds));return {ok:true};});
   app.put('/api/settings/tasks/:action',async(request,reply)=>{const action=taskActionSchema.safeParse((request.params as {action:string}).action),body=z.object({modelId:z.string().min(1)}).safeParse(request.body);if(!action.success||!body.success)return reply.code(400).send({error:'Invalid task route'});if(!row('SELECT id FROM model_definitions WHERE id=? AND enabled=1',body.data.modelId))return reply.code(422).send({error:'Select an enabled model'});db.prepare('INSERT INTO task_model_routes(action,model_id) VALUES(?,?) ON CONFLICT(action) DO UPDATE SET model_id=excluded.model_id').run(action.data,body.data.modelId);return{ok:true};});
+  app.get('/api/settings/prompts', async () => promptTemplateSettings());
+  app.put('/api/settings/prompts/:key', async (request, reply) => {
+    const body = z.object({ template: z.string().max(50_000) }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      savePromptTemplate((request.params as { key: string }).key, body.data.template);
+      return { ok: true };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid prompt template' });
+    }
+  });
+  app.delete('/api/settings/prompts/:key', async (request, reply) => {
+    try {
+      resetPromptTemplate((request.params as { key: string }).key);
+      return { ok: true };
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : 'Prompt template not found' });
+    }
+  });
   app.get('/api/settings/providers/:id/catalog',async(request,reply)=>{const setting=providerSetting((request.params as {id:string}).id);if(!setting||setting.protocol!=='openrouter')return reply.code(422).send({error:'Catalog discovery is available for OpenRouter providers'});const key=process.env[setting.secret_env_name];if(!key)return reply.code(422).send({error:`Server secret ${setting.secret_env_name} is not configured`});const response=await fetch(`${setting.base_url}/models`,{headers:{authorization:`Bearer ${key}`}});if(!response.ok)return reply.code(502).send({error:`Catalog returned ${response.status}`});const result=await response.json() as {data?:Array<{id:string;name?:string;context_length?:number;architecture?:unknown;pricing?:unknown}>};return(result.data??[]).map(model=>({id:model.id,label:model.name??model.id,contextWindow:model.context_length??0,architecture:model.architecture,pricing:model.pricing}));});
 }
 export function providerSetting(providerId:string){return row<{protocol:string;base_url:string;secret_env_name:string;config_json:string;enabled:number}>('SELECT protocol,base_url,secret_env_name,config_json,enabled FROM model_settings WHERE provider_id=?',providerId);}
