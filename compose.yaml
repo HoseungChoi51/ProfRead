@@ -1,15 +1,15 @@
 services:
-  co-reader:
+  afterdraft:
     build: .
     restart: unless-stopped
     init: true
     environment:
-      CO_READER_PASSWORD: ${CO_READER_PASSWORD:?set CO_READER_PASSWORD}
-      CO_READER_SESSION_SECRET: ${CO_READER_SESSION_SECRET:?set CO_READER_SESSION_SECRET}
+      AFTERDRAFT_PASSWORD: ${AFTERDRAFT_PASSWORD:?set AFTERDRAFT_PASSWORD}
+      AFTERDRAFT_SESSION_SECRET: ${AFTERDRAFT_SESSION_SECRET:?set AFTERDRAFT_SESSION_SECRET}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
-      - co-reader-data:/data
+      - afterdraft-data:/data
     ports:
       - "127.0.0.1:4310:4310"
     stop_grace_period: 30s
@@ -19,5 +19,5 @@ services:
         max-size: "10m"
         max-file: "5"
 volumes:
-  co-reader-data:
-    name: co-reader-data
+  afterdraft-data:
+    name: afterdraft-data

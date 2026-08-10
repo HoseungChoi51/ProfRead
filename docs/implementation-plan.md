@@ -1,4 +1,4 @@
-# Interactive LLM Co-reader implementation plan
+# Interactive LLM AfterDraft implementation plan
 
 ## Summary
 

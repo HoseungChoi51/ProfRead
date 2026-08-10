@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import type { ModelDefinition,ModelProfile } from '@co-reader/shared';
+import type { ModelDefinition,ModelProfile } from '@afterdraft/shared';
 import { deterministicProfile,route,toolsFor } from './router.js';
 const capabilities={text:true,vision:true,structuredOutput:true,functionTools:true,providerWebSearch:true,reasoningControl:false,imageGeneration:true,streaming:true};
 const models:ModelDefinition[]=[{id:'fast',providerId:'p',label:'Fast',protocol:'chat-completions',contextWindow:10000,maxOutput:1000,capabilities,priority:10,enabled:true},{id:'large',providerId:'p',label:'Large',protocol:'chat-completions',contextWindow:100000,maxOutput:4000,capabilities,priority:20,enabled:true}];

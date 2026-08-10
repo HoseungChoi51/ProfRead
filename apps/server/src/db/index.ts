@@ -9,7 +9,7 @@ mkdirSync(join(config.dataDir, 'documents'), { recursive: true });
 mkdirSync(join(config.dataDir, 'exports'), { recursive: true });
 mkdirSync(join(config.dataDir, 'generated'), { recursive: true });
 mkdirSync(join(config.dataDir, 'edits'), { recursive: true });
-export const db = new DatabaseSync(join(config.dataDir, 'co-reader.sqlite'));
+export const db = new DatabaseSync(join(config.dataDir, 'afterdraft.sqlite'));
 db.exec(schema);
 let blockColumns=db.prepare('PRAGMA table_info(blocks)').all() as Array<{name:string;pk:number}>;
 if(!blockColumns.some(column=>column.name==='visual_data')){db.exec('ALTER TABLE blocks ADD COLUMN visual_data TEXT');blockColumns=db.prepare('PRAGMA table_info(blocks)').all() as Array<{name:string;pk:number}>}

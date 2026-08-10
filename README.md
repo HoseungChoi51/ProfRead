@@ -1,6 +1,6 @@
-# Co-reader
+# AfterDraft
 
-Co-reader is a private, self-hosted web app for reading imported HTML
+AfterDraft is a private, self-hosted web app for reading imported HTML
 articles with context-aware LLM explanations, recursive follow-up discussions,
 curated annotations, and durable study artifacts.
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AnchorSelector, DocumentEditOperation } from "@co-reader/shared";
+import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
 import { api, stream } from "./api.js";
 type DocumentInfo = {
   id: string;
@@ -101,7 +101,7 @@ export function Reader({
     [taskRoutes, setTaskRoutes] = useState<TaskRoute[]>([]),
     [modelOverride, setModelOverride] = useState(""),
     [repairId, setRepairId] = useState(
-      () => sessionStorage.getItem("co-reader-repair-id") ?? "",
+      () => sessionStorage.getItem("afterdraft-repair-id") ?? "",
     ),
     [selection, setSelection] = useState<Selection | null>(null),
     [error, setError] = useState(""),
@@ -191,7 +191,7 @@ export function Reader({
     const receive = (event: MessageEvent) => {
       if (
         event.source !== iframe.current?.contentWindow ||
-        event.data?.source !== "co-reader"
+        event.data?.source !== "afterdraft"
       )
         return;
       if (event.data.type === "selection")
@@ -677,7 +677,7 @@ export function Reader({
           exactQuote: selection.exact,
         }),
       });
-      sessionStorage.removeItem("co-reader-repair-id");
+      sessionStorage.removeItem("afterdraft-repair-id");
       setRepairId("");
       setSelection(null);
       await Promise.all([loadThreads(), loadHighlights()]);
@@ -875,7 +875,7 @@ export function Reader({
       const csrf = decodeURIComponent(
         document.cookie
           .split("; ")
-          .find((v) => v.startsWith("co_reader_csrf="))
+          .find((v) => v.startsWith("afterdraft_csrf="))
           ?.split("=")
           .slice(1)
           .join("=") ?? "",
@@ -888,7 +888,7 @@ export function Reader({
       if (!response.ok) throw new Error((await response.json()).error);
       const link = document.createElement("a");
       link.href = URL.createObjectURL(await response.blob());
-      link.download = `${doc?.title ?? "co-reader"}.${format === "markdown" ? "md" : format}`;
+      link.download = `${doc?.title ?? "afterdraft"}.${format === "markdown" ? "md" : format}`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     } catch (e) {
@@ -1329,7 +1329,7 @@ export function Reader({
                 placeholder="Memory topology"
               />
             </label>
-            <p>Clear all three fields to remove a caption added by co-reader.</p>
+            <p>Clear all three fields to remove a caption added by AfterDraft.</p>
             <footer>
               <button type="button" onClick={() => setCaptionDraft(null)}>
                 Cancel
@@ -1577,7 +1577,7 @@ function ThreadCard({
       </button>
       {thread.messages.map((message) => (
         <div key={message.id} className={`message ${message.role}`}>
-          <span>{message.role === "assistant" ? "Co-reader" : "You"}</span>
+          <span>{message.role === "assistant" ? "AfterDraft" : "You"}</span>
           <div
             onMouseUp={() => {
               if (message.role !== "assistant" || message.id === "draft")

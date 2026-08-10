@@ -1,6 +1,6 @@
 # Deployment and recovery
 
-Co-reader is intended to run behind an HTTPS reverse proxy or a private VPN.
+AfterDraft is intended to run behind an HTTPS reverse proxy or a private VPN.
 The included Compose configuration binds only to loopback. Do not expose port
 4310 directly to the public internet.
 
@@ -11,11 +11,11 @@ The included Compose configuration binds only to loopback. Do not expose port
 2. Put provider keys in that env file or inject them as Docker
    secrets/environment variables. The database stores only their
    environment-variable names.
-3. Run `docker compose --env-file /path/to/co-reader.env up -d --build`, then
+3. Run `docker compose --env-file /path/to/afterdraft.env up -d --build`, then
    proxy an HTTPS hostname to `127.0.0.1:4310`.
 
 The Compose configuration explicitly creates the engine-level
-`co-reader-data` volume. It contains the WAL-mode SQLite database, immutable
+`afterdraft-data` volume. It contains the WAL-mode SQLite database, immutable
 source files, derived assets, and exports, and must be treated as one recovery
 unit.
 
@@ -25,10 +25,10 @@ Pause writes while copying the volume. The simplest private-instance procedure
 is:
 
 ```sh
-docker compose --env-file /path/to/co-reader.env stop co-reader
-docker run --rm -v co-reader-data:/source:ro -v "$PWD/backups:/backup" alpine \
-  tar -C /source -czf "/backup/co-reader-$(date +%F-%H%M%S).tar.gz" .
-docker compose --env-file /path/to/co-reader.env start co-reader
+docker compose --env-file /path/to/afterdraft.env stop afterdraft
+docker run --rm -v afterdraft-data:/source:ro -v "$PWD/backups:/backup" alpine \
+  tar -C /source -czf "/backup/afterdraft-$(date +%F-%H%M%S).tar.gz" .
+docker compose --env-file /path/to/afterdraft.env start afterdraft
 ```
 
 Stopping the service ensures the SQLite database, `-wal` file, and immutable
@@ -41,12 +41,12 @@ Restore into a new empty volume first; keep the original volume until the
 health check and document assets have been verified.
 
 ```sh
-docker volume create co-reader-restored
-docker run --rm -v co-reader-restored:/target -v "$PWD/backups:/backup:ro" alpine \
-  tar -C /target -xzf /backup/CO_READER_BACKUP.tar.gz
+docker volume create afterdraft-restored
+docker run --rm -v afterdraft-restored:/target -v "$PWD/backups:/backup:ro" alpine \
+  tar -C /target -xzf /backup/AFTERDRAFT_BACKUP.tar.gz
 ```
 
-Start an isolated validation container with `co-reader-restored` mounted at
+Start an isolated validation container with `afterdraft-restored` mounted at
 `/data`, sign in over HTTPS, open several documents, and test an export. Do not
 stop or overwrite the production volume during a restore test. Only after a
 real recovery has been accepted should the old production volume be retired.

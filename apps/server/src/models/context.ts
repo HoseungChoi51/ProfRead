@@ -1,4 +1,4 @@
-import type { ContextBundle } from '@co-reader/shared';
+import type { ContextBundle } from '@afterdraft/shared';
 import { db,now,row, rows } from '../db/index.js';
 
 const tokens=(text:string)=>Math.ceil(text.length/4);

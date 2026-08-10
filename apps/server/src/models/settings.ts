@@ -8,7 +8,7 @@ import {
   type ModelProfile,
   type TaskAction,
   type TaskModelRoute,
-} from '@co-reader/shared';
+} from '@afterdraft/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { db, row, rows } from '../db/index.js';

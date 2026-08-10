@@ -1,4 +1,4 @@
-import type { ModelDefinition, ModelProfile } from '@co-reader/shared';
+import type { ModelDefinition, ModelProfile } from '@afterdraft/shared';
 
 export type Action = 'define'|'explain'|'eli14'|'ask'|'visualize'|'research'|'summarize'|'tldr'|'half-page'|'visual-recap'|'compact';
 export interface RouteInput { action: Action; input: string; hasVisual: boolean; webEnabled: boolean; estimatedTokens: number; modelOverride?: string; taskModelId?: string }

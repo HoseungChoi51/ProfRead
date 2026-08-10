@@ -12,7 +12,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 FROM node:24-alpine AS runtime
-ENV NODE_ENV=production CO_READER_DATA_DIR=/data CO_READER_WEB_DIR=/app/apps/web/dist CO_READER_PORT=4310
+ENV NODE_ENV=production AFTERDRAFT_DATA_DIR=/data AFTERDRAFT_WEB_DIR=/app/apps/web/dist AFTERDRAFT_PORT=4310
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/

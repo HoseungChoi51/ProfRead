@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { diagramSpecSchema, visualRecapSchema, type RunEvent, type ModelProvider, type ModelDefinition } from '@co-reader/shared';
+import { diagramSpecSchema, visualRecapSchema, type RunEvent, type ModelProvider, type ModelDefinition } from '@afterdraft/shared';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { db, now, row, rows } from '../db/index.js';
