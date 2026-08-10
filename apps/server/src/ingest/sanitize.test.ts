@@ -1,7 +1,8 @@
 import { describe,expect,it } from 'vitest';
-import { normalizeAssetPath,sanitizeDocument,sanitizeStylesheet } from './sanitize.js';
+import { BRIDGE,normalizeAssetPath,sanitizeDocument,sanitizeStylesheet } from './sanitize.js';
 describe('sanitization',()=>{
   it('rejects traversal and external resources',()=>{expect(normalizeAssetPath('', '../secret')).toBeNull();expect(normalizeAssetPath('article','https://evil.test/x')).toBeNull();expect(normalizeAssetPath('article','../img/a.png')).toBe('img/a.png');});
   it('removes active content and assigns blocks',()=>{const result=sanitizeDocument('<html><head><style>@import "https://evil";p{background:url(https://evil)}</style></head><body><script>alert(1)</script><form>x</form><p onclick="x()">Hello world</p><img src="img.png" onerror="x()"></body></html>','index.html',p=>`/asset/${p}`);expect(result.html).not.toContain('onclick');expect(result.html).not.toContain('alert(1)');expect(result.html).not.toContain('https://evil');expect(result.html).toContain('data-block-id');expect(result.canonicalText).toContain('Hello world');});
   it('preserves local stylesheets and rewrites nested CSS assets',()=>{const result=sanitizeDocument('<html><head><link rel="stylesheet" href="css/main.css"></head><body><p>Hello</p></body></html>','index.html',p=>`/asset/${p}`);expect(result.html).toContain('href="/asset/css/main.css"');const css=sanitizeStylesheet('@import "https://evil";.hero{background:url(../img/a.png)}','css/main.css',p=>`/asset/${p}`);expect(css).not.toContain('@import');expect(css).toContain('/asset/img/a.png')});
+  it('ships a syntactically valid sandbox bridge with edit-mode messages',()=>{expect(()=>new Function(BRIDGE)).not.toThrow();expect(BRIDGE).toContain('edit-context');expect(BRIDGE).toContain('finish-editing')});
 });

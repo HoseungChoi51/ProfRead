@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS document_versions (
  id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, content_hash TEXT NOT NULL UNIQUE,
  source_name TEXT NOT NULL, entry_path TEXT NOT NULL, sanitized_html_path TEXT NOT NULL, canonical_text TEXT NOT NULL,
  token_estimate INTEGER NOT NULL, version INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(document_id, version));
+CREATE TABLE IF NOT EXISTS document_edit_revisions (
+ id TEXT PRIMARY KEY, document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+ revision INTEGER NOT NULL, edited_html_path TEXT NOT NULL, canonical_text TEXT NOT NULL, base_title TEXT NOT NULL,
+ summary_json TEXT NOT NULL, restored_from_revision INTEGER, created_at TEXT NOT NULL,
+ UNIQUE(document_version_id, revision));
 CREATE TABLE IF NOT EXISTS assets (
  id TEXT PRIMARY KEY, document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
  source_path TEXT NOT NULL, content_hash TEXT NOT NULL, mime_type TEXT NOT NULL, storage_path TEXT NOT NULL,

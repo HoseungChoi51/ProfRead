@@ -9,6 +9,8 @@ import { db, now, row, rows } from '../db/index.js';
 import { importSource } from '../ingest/index.js';
 import { ensureContexts } from '../models/context-jobs.js';
 import { config } from '../config.js';
+import {effectiveVersion,readEffectiveHtml}from'../edits/effective.js';
+import{BRIDGE,READER_CSS}from'../ingest/sanitize.js';
 
 const responsiveReaderStyle='<style id="co-reader-responsive">html{overflow-x:hidden}body{box-sizing:border-box!important;width:min(calc(100% - clamp(2rem,6vw,6rem)),1200px)!important;max-width:none!important;margin:clamp(1.5rem,4vw,3rem) auto!important;padding:0!important}body *{box-sizing:border-box}pre,table{max-width:100%;overflow:auto}</style>';
 
@@ -36,9 +38,9 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   app.get('/api/documents/:id/tags',async request=>rows<{tag:string}>('SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag',(request.params as {id:string}).id).map(item=>item.tag));
   app.put('/api/documents/:id/tags',async(request,reply)=>{const parsed=z.object({tags:z.array(z.string().trim().min(1).max(40)).max(30)}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const id=(request.params as {id:string}).id;db.exec('BEGIN IMMEDIATE');try{db.prepare('DELETE FROM document_tags WHERE document_id=?').run(id);const insert=db.prepare('INSERT INTO document_tags(document_id,tag)VALUES(?,?)');for(const tag of new Set(parsed.data.tags))insert.run(id,tag);db.prepare('UPDATE search_index SET tags=? WHERE document_id=?').run(parsed.data.tags.join(' '),id);db.exec('COMMIT');return{ok:true}}catch(error){db.exec('ROLLBACK');throw error}});
   app.get('/api/versions/:id/content', async (request, reply) => {
-    const version = row<{ sanitized_html_path:string }>('SELECT sanitized_html_path FROM document_versions WHERE id=?', (request.params as { id:string }).id);
+    const version = effectiveVersion((request.params as { id:string }).id);
     if (!version) return reply.code(404).send('Not found');
-    const nonce = randomBytes(18).toString('base64url'); const html = (await readFile(version.sanitized_html_path, 'utf8')).replace('</head>',`${responsiveReaderStyle}</head>`).replaceAll('__CO_READER_NONCE__', nonce);
+    const nonce = randomBytes(18).toString('base64url'); const source=await readEffectiveHtml(version.id),html=source.replace(/<script[^>]*nonce="__CO_READER_NONCE__"[^>]*>[^]*?<\/script>/gi,'').replace('</head>',`${responsiveReaderStyle}<style id="co-reader-current">${READER_CSS}</style></head>`).replace('</body>',`<script nonce="${nonce}">${BRIDGE}</script></body>`);
     return reply.header('content-type','text/html; charset=utf-8').header('cache-control','private, no-store')
       .header('content-security-policy', `sandbox allow-scripts; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html);
   });

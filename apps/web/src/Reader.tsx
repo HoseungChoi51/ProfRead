@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AnchorSelector } from "@co-reader/shared";
+import type { AnchorSelector, DocumentEditOperation } from "@co-reader/shared";
 import { api, stream } from "./api.js";
 type DocumentInfo = {
   id: string;
@@ -52,6 +52,26 @@ type Selection = AnchorSelector & {
   rect: { top: number; left: number; width: number; height: number };
   visual?: { mimeType: "image/png"; data: string };
 };
+type EditContext = {
+  blockId: string;
+  kind: "text" | "heading" | "visual";
+  tag: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  selectedText: string;
+  formats: Record<"bold" | "italic" | "underline", boolean>;
+  folded: boolean | null;
+  caption: { label: string; number: string; caption: string } | null;
+  rect: { top: number; left: number; width: number; height: number };
+};
+type EditRevision = {
+  revision: number;
+  summary: Record<string, number>;
+  restored_from_revision: number | null;
+  created_at: string;
+};
+type EditHistory = { currentRevision: number; revisions: EditRevision[] };
 const actionLabels = {
   define: "Define",
   explain: "Explain",
@@ -89,11 +109,21 @@ export function Reader({
     [running, setRunning] = useState<string | null>(null),
     [routeInfo, setRouteInfo] = useState(""),
     [drawer, setDrawer] = useState(false),
-    [activeEntry, setActiveEntry] = useState<ActiveEntry | null>(null);
+    [activeEntry, setActiveEntry] = useState<ActiveEntry | null>(null),
+    [editMode, setEditMode] = useState(false),
+    [pendingEdits, setPendingEdits] = useState<DocumentEditOperation[]>([]),
+    [editHistory, setEditHistory] = useState<EditHistory | null>(null),
+    [editContext, setEditContext] = useState<EditContext | null>(null),
+    [captionDraft, setCaptionDraft] = useState<EditContext | null>(null),
+    [historyOpen, setHistoryOpen] = useState(false),
+    [savingEdits, setSavingEdits] = useState(false),
+    [contentEpoch, setContentEpoch] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null),
     toolbar = useRef<HTMLDivElement>(null),
     aborter = useRef<AbortController | null>(null),
-    scrollRatio = useRef(0);
+    scrollRatio = useRef(0),
+    pendingEditsRef = useRef<DocumentEditOperation[]>([]),
+    editFinishResolvers = useRef(new Map<string, () => void>());
   const loadThreads = useCallback(
     () =>
       api<any[]>(`/api/documents/${documentId}/threads`).then((data) =>
@@ -124,10 +154,18 @@ export function Reader({
       }),
     [documentId],
   );
+  const loadEditHistory = useCallback(
+    (versionId: string) =>
+      api<EditHistory>(`/api/versions/${versionId}/edit-history`).then(
+        setEditHistory,
+      ),
+    [],
+  );
   useEffect(() => {
     api<DocumentInfo>(`/api/documents/${documentId}`)
       .then((info) => {
         setDoc(info);
+        void loadEditHistory(info.version_id);
         if (info.last_thread_id) {
           setDrawer(true);
         }
@@ -142,7 +180,7 @@ export function Reader({
         setTaskRoutes(value.taskRoutes);
       })
       .catch(() => {});
-  }, [documentId, loadThreads, loadHighlights, loadArtifacts]);
+  }, [documentId, loadThreads, loadHighlights, loadArtifacts, loadEditHistory]);
   useEffect(() => {
     if (!routeInfo && models.length && taskRoutes.length)
       setRouteInfo(
@@ -182,7 +220,34 @@ export function Reader({
       if (event.data.type === "layout") {
         scrollRatio.current = event.data.ratio;
       }
+      if (event.data.type === "edit-context") {
+        const frame = iframe.current?.getBoundingClientRect();
+        setEditContext({
+          ...event.data,
+          rect: {
+            ...event.data.rect,
+            top: (frame?.top ?? 0) + event.data.rect.top,
+            left: (frame?.left ?? 0) + event.data.rect.left,
+          },
+        });
+      }
+      if (event.data.type === "edit-operation") {
+        const next = [...pendingEditsRef.current, event.data.operation];
+        pendingEditsRef.current = next;
+        setPendingEdits(next);
+      }
+      if (event.data.type === "edit-finished") {
+        editFinishResolvers.current.get(event.data.requestId)?.();
+        editFinishResolvers.current.delete(event.data.requestId);
+      }
       if (event.data.type === "ready") {
+        if (editMode) {
+          iframe.current?.contentWindow?.postMessage(
+            { type: "enter-edit-mode" },
+            "*",
+          );
+          return;
+        }
         iframe.current?.contentWindow?.postMessage(
           {
             type: "apply-anchors",
@@ -220,7 +285,7 @@ export function Reader({
     };
     addEventListener("message", receive);
     return () => removeEventListener("message", receive);
-  }, [threads, highlights, doc?.offset_ratio]);
+  }, [threads, highlights, doc?.offset_ratio, editMode]);
   useEffect(() => {
     iframe.current?.contentWindow?.postMessage(
       {
@@ -246,6 +311,14 @@ export function Reader({
       "*",
     );
   }, [threads, highlights]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!pendingEditsRef.current.length) return;
+      event.preventDefault();
+    };
+    addEventListener("beforeunload", warn);
+    return () => removeEventListener("beforeunload", warn);
+  }, []);
   useEffect(() => {
     if (selection)
       requestAnimationFrame(() =>
@@ -639,6 +712,141 @@ export function Reader({
   useEffect(() => {
     if (selection && doc) void preview("ask");
   }, [selection, doc?.version_id, modelOverride]);
+  function queueEdit(operation: DocumentEditOperation) {
+    const next = [...pendingEditsRef.current, operation];
+    pendingEditsRef.current = next;
+    setPendingEdits(next);
+    iframe.current?.contentWindow?.postMessage(
+      { type: "apply-edit-operation", operation },
+      "*",
+    );
+    setEditContext(null);
+  }
+  function finishInlineEditing(): Promise<void> {
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        editFinishResolvers.current.delete(requestId);
+        resolve();
+      }, 500);
+      editFinishResolvers.current.set(requestId, () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      iframe.current?.contentWindow?.postMessage(
+        { type: "finish-editing", requestId },
+        "*",
+      );
+    });
+  }
+  async function enterEditMode() {
+    if (!doc || running) return;
+    try {
+      await loadEditHistory(doc.version_id);
+      pendingEditsRef.current = [];
+      setPendingEdits([]);
+      setSelection(null);
+      setDrawer(false);
+      setEditMode(true);
+      iframe.current?.contentWindow?.postMessage(
+        { type: "enter-edit-mode" },
+        "*",
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  function leaveEditMode(force = false) {
+    if (
+      !force &&
+      pendingEditsRef.current.length &&
+      !confirm("Discard every unsaved edit in this session?")
+    )
+      return;
+    pendingEditsRef.current = [];
+    setPendingEdits([]);
+    setEditContext(null);
+    setCaptionDraft(null);
+    setEditMode(false);
+    setContentEpoch((value) => value + 1);
+  }
+  async function saveEditSession() {
+    if (!doc || savingEdits) return;
+    await finishInlineEditing();
+    const operations = pendingEditsRef.current;
+    if (!operations.length) {
+      leaveEditMode(true);
+      return;
+    }
+    setSavingEdits(true);
+    try {
+      const saved = await api<{ revision: number; title: string }>(
+        `/api/versions/${doc.version_id}/edits`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            baseRevision: editHistory?.currentRevision ?? 0,
+            operations,
+          }),
+        },
+      );
+      pendingEditsRef.current = [];
+      setPendingEdits([]);
+      setDoc((current) =>
+        current ? { ...current, title: saved.title } : current,
+      );
+      await loadEditHistory(doc.version_id);
+      setEditMode(false);
+      setEditContext(null);
+      setContentEpoch((value) => value + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingEdits(false);
+    }
+  }
+  async function restoreRevision(revision: number) {
+    if (!doc || !editHistory) return;
+    if (
+      pendingEditsRef.current.length &&
+      !confirm("Restoring history will discard every unsaved edit. Continue?")
+    )
+      return;
+    if (!confirm(`Restore revision ${revision === 0 ? "Original" : revision}?`))
+      return;
+    try {
+      const restored = await api<{ revision: number; title: string }>(
+        `/api/versions/${doc.version_id}/edit-revisions/${revision}/restore`,
+        {
+          method: "POST",
+          body: JSON.stringify({ baseRevision: editHistory.currentRevision }),
+        },
+      );
+      setDoc((current) =>
+        current ? { ...current, title: restored.title } : current,
+      );
+      pendingEditsRef.current = [];
+      setPendingEdits([]);
+      setEditMode(false);
+      await Promise.all([
+        loadEditHistory(doc.version_id),
+        loadThreads(),
+        loadHighlights(),
+      ]);
+      setHistoryOpen(false);
+      setContentEpoch((value) => value + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  function backToLibrary() {
+    if (
+      pendingEditsRef.current.length &&
+      !confirm("Discard every unsaved edit and return to the library?")
+    )
+      return;
+    onBack();
+  }
   const activeThread = useMemo(
     () =>
       activeEntry?.type === "thread"
@@ -695,9 +903,12 @@ export function Reader({
     await loadArtifacts();
   }
   return (
-    <main className={`reader-shell ${drawer ? "drawer-open" : ""}`}>
+    <main
+      className={`reader-shell ${drawer ? "drawer-open" : ""} ${editMode ? "editing" : ""}`}
+      onClick={() => editContext && setEditContext(null)}
+    >
       <header className="reader-header">
-        <button className="quiet" onClick={onBack}>
+        <button className="quiet" onClick={backToLibrary}>
           ← Library
         </button>
         <div>
@@ -708,6 +919,27 @@ export function Reader({
           </span>
         </div>
         <div className="reader-actions">
+          {!editMode && (
+            <details className="summary-menu">
+              <summary>Edit</summary>
+              <button onClick={() => void enterEditMode()}>
+                Edit document
+              </button>
+              <button
+                onClick={() => {
+                  void loadEditHistory(doc.version_id);
+                  setHistoryOpen(true);
+                }}
+              >
+                History
+              </button>
+            </details>
+          )}
+          {editMode && (
+            <button className="quiet" onClick={() => setHistoryOpen(true)}>
+              History
+            </button>
+          )}
           <details className="summary-menu">
             <summary>Summaries</summary>
             <button onClick={() => documentAction("tldr")}>TL;DR</button>
@@ -736,6 +968,25 @@ export function Reader({
           </button>
         </div>
       </header>
+      {editMode && (
+        <div className="edit-session-bar" role="status">
+          <span>
+            Edit mode · Right-click text, a heading, or a visual ·{" "}
+            <b>{pendingEdits.length}</b> pending change
+            {pendingEdits.length === 1 ? "" : "s"}
+          </span>
+          <button className="quiet" onClick={() => leaveEditMode()}>
+            Cancel
+          </button>
+          <button
+            className="primary"
+            disabled={savingEdits}
+            onClick={() => void saveEditSession()}
+          >
+            {savingEdits ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      )}
       {error && (
         <div className="toast" role="alert">
           {error}
@@ -745,6 +996,7 @@ export function Reader({
       <div className="reader-grid">
         <section className="paper">
           <iframe
+            key={contentEpoch}
             ref={iframe}
             title={doc.title}
             src={`/api/versions/${doc.version_id}/content`}
@@ -865,7 +1117,7 @@ export function Reader({
           )}
         </aside>
       </div>
-      {selection && (
+      {!editMode && selection && (
         <div
           ref={toolbar}
           className="selection-tools"
@@ -928,6 +1180,208 @@ export function Reader({
           </button>
         </div>
       )}
+      {editMode && editContext && (
+        <div
+          className="edit-context-menu"
+          role="menu"
+          aria-label="HTML edit actions"
+          onClick={(event) => event.stopPropagation()}
+          style={{
+            top: Math.min(innerHeight - 260, Math.max(72, editContext.rect.top)),
+            left: Math.min(
+              innerWidth - 220,
+              Math.max(8, editContext.rect.left),
+            ),
+          }}
+        >
+          <small>
+            {editContext.selectedText || editContext.text.slice(0, 48)}
+          </small>
+          {editContext.kind !== "visual" && (
+            <>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  iframe.current?.contentWindow?.postMessage(
+                    {
+                      type: "start-inline-edit",
+                      blockId: editContext.blockId,
+                    },
+                    "*",
+                  );
+                  setEditContext(null);
+                }}
+              >
+                Edit text in place
+              </button>
+              {(["bold", "italic", "underline"] as const).map((style) => (
+                <button
+                  role="menuitem"
+                  key={style}
+                  onClick={() =>
+                    queueEdit({
+                      type: "format-text",
+                      blockId: editContext.blockId,
+                      startOffset: editContext.startOffset,
+                      endOffset: editContext.endOffset,
+                      style,
+                      enabled: !editContext.formats[style],
+                    })
+                  }
+                >
+                  {editContext.formats[style] ? "Remove " : ""}
+                  {style.charAt(0).toUpperCase() + style.slice(1)}
+                  {!editContext.selectedText ? " element" : ""}
+                </button>
+              ))}
+            </>
+          )}
+          {editContext.kind === "heading" && (
+            <button
+              role="menuitem"
+              onClick={() =>
+                queueEdit({
+                  type: "fold-section",
+                  blockId: editContext.blockId,
+                  folded: editContext.folded !== true,
+                })
+              }
+            >
+              {editContext.folded ? "Unfold section" : "Fold section"}
+            </button>
+          )}
+          {editContext.kind === "visual" && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                setCaptionDraft(editContext);
+                setEditContext(null);
+              }}
+            >
+              Edit caption and number…
+            </button>
+          )}
+          <button role="menuitem" onClick={() => setEditContext(null)}>
+            Close
+          </button>
+        </div>
+      )}
+      {captionDraft && (
+        <div className="modal-backdrop" role="presentation">
+          <form
+            className="edit-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="caption-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const values = new FormData(event.currentTarget);
+              queueEdit({
+                type: "set-caption",
+                blockId: captionDraft.blockId,
+                label: String(values.get("label") ?? "").trim(),
+                number: String(values.get("number") ?? "").trim(),
+                caption: String(values.get("caption") ?? "").trim(),
+              });
+              setCaptionDraft(null);
+            }}
+          >
+            <header>
+              <div>
+                <span className="eyebrow">Manual visual label</span>
+                <h2 id="caption-dialog-title">Caption and number</h2>
+              </div>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => setCaptionDraft(null)}
+              >
+                ×
+              </button>
+            </header>
+            <div className="caption-fields">
+              <label>
+                Label
+                <input
+                  name="label"
+                  maxLength={40}
+                  defaultValue={captionDraft.caption?.label ?? ""}
+                  placeholder="Diagram"
+                  autoFocus
+                />
+              </label>
+              <label>
+                Number
+                <input
+                  name="number"
+                  maxLength={20}
+                  defaultValue={captionDraft.caption?.number ?? ""}
+                  placeholder="3a"
+                />
+              </label>
+            </div>
+            <label>
+              Caption
+              <textarea
+                name="caption"
+                maxLength={2000}
+                defaultValue={captionDraft.caption?.caption ?? ""}
+                placeholder="Memory topology"
+              />
+            </label>
+            <p>Clear all three fields to remove a caption added by co-reader.</p>
+            <footer>
+              <button type="button" onClick={() => setCaptionDraft(null)}>
+                Cancel
+              </button>
+              <button className="primary">Apply to draft</button>
+            </footer>
+          </form>
+        </div>
+      )}
+      {historyOpen && editHistory && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="edit-dialog edit-history-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-history-title"
+          >
+            <header>
+              <div>
+                <span className="eyebrow">Current revision {editHistory.currentRevision}</span>
+                <h2 id="edit-history-title">Edit history</h2>
+              </div>
+              <button className="quiet" onClick={() => setHistoryOpen(false)}>
+                ×
+              </button>
+            </header>
+            <div className="edit-revisions">
+              {editHistory.revisions.map((revision) => (
+                <article key={revision.revision}>
+                  <div>
+                    <b>
+                      {revision.revision === 0
+                        ? "Original import"
+                        : `Revision ${revision.revision}`}
+                    </b>
+                    <small>{new Date(revision.created_at).toLocaleString()}</small>
+                    <span>{editSummary(revision)}</span>
+                  </div>
+                  {revision.revision !== editHistory.currentRevision && (
+                    <button onClick={() => void restoreRevision(revision.revision)}>
+                      Restore
+                    </button>
+                  )}
+                </article>
+              ))}
+            </div>
+            <footer>
+              <button onClick={() => setHistoryOpen(false)}>Close</button>
+            </footer>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -962,6 +1416,20 @@ function artifactLabel(artifact: Artifact): string {
 function threadEntryLabel(thread: Thread): string {
   const text = thread.exact_quote || thread.title || "Follow-up";
   return `${thread.action === "define" ? "Define · " : ""}${text}`;
+}
+function editSummary(revision: EditRevision): string {
+  if (revision.revision === 0) return "Unedited source";
+  if (revision.restored_from_revision !== null)
+    return `Restored from ${revision.restored_from_revision === 0 ? "original" : `revision ${revision.restored_from_revision}`}`;
+  const labels: Record<string, string> = {
+    "replace-text": "text",
+    "format-text": "formatting",
+    "fold-section": "folding",
+    "set-caption": "caption",
+  };
+  return Object.entries(revision.summary)
+    .map(([kind, count]) => `${count} ${labels[kind] ?? kind}`)
+    .join(" · ");
 }
 function ArtifactCard({
   artifact,

@@ -26,9 +26,17 @@ export type TaskModelRoute = z.infer<typeof taskModelRouteSchema>;
 export const anchorSelectorSchema = z.object({
   blockId: z.string().min(1), exact: z.string(), prefix: z.string().default(''), suffix: z.string().default(''),
   startOffset: z.number().int().nonnegative(), endOffset: z.number().int().nonnegative(),
-  blockType: z.enum(['text', 'image', 'svg', 'table', 'diagram']).default('text'),
+  blockType: z.enum(['text', 'image', 'svg', 'table', 'diagram', 'video']).default('text'),
 });
 export type AnchorSelector = z.infer<typeof anchorSelectorSchema>;
+
+export const documentEditOperationSchema=z.discriminatedUnion('type',[
+  z.object({type:z.literal('replace-text'),blockId:z.string().min(1),text:z.string().max(100_000)}),
+  z.object({type:z.literal('format-text'),blockId:z.string().min(1),startOffset:z.number().int().nonnegative(),endOffset:z.number().int().nonnegative(),style:z.enum(['bold','italic','underline']),enabled:z.boolean()}),
+  z.object({type:z.literal('fold-section'),blockId:z.string().min(1),folded:z.boolean()}),
+  z.object({type:z.literal('set-caption'),blockId:z.string().min(1),label:z.string().trim().max(40),number:z.string().trim().max(20),caption:z.string().trim().max(2000)}),
+]);
+export type DocumentEditOperation=z.infer<typeof documentEditOperationSchema>;
 
 export const contextBundleSchema = z.object({
   tier: z.enum(['canonical', 'brief', 'study', 'study-with-branch-digest']),
