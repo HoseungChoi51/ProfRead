@@ -1027,7 +1027,7 @@ export function Reader({
       {editMode && (
         <div className="edit-session-bar" role="status">
           <span>
-            Edit mode · Right-click text, a heading, or a visual ·{" "}
+            Edit mode · Click text to edit · Click an image, then drag its corner · Right-click for formatting and captions ·{" "}
             <b>{pendingEdits.length}</b> pending change
             {pendingEdits.length === 1 ? "" : "s"}
           </span>
@@ -1286,21 +1286,6 @@ export function Reader({
           </small>
           {editContext.kind !== "visual" && (
             <>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  iframe.current?.contentWindow?.postMessage(
-                    {
-                      type: "start-inline-edit",
-                      blockId: editContext.blockId,
-                    },
-                    "*",
-                  );
-                  setEditContext(null);
-                }}
-              >
-                Edit text in place
-              </button>
               {(["bold", "italic", "underline"] as const).map((style) => (
                 <button
                   role="menuitem"

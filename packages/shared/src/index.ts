@@ -35,6 +35,7 @@ export const documentEditOperationSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('format-text'),blockId:z.string().min(1),startOffset:z.number().int().nonnegative(),endOffset:z.number().int().nonnegative(),style:z.enum(['bold','italic','underline']),enabled:z.boolean()}),
   z.object({type:z.literal('fold-section'),blockId:z.string().min(1),folded:z.boolean()}),
   z.object({type:z.literal('set-caption'),blockId:z.string().min(1),label:z.string().trim().max(40),number:z.string().trim().max(20),caption:z.string().trim().max(2000)}),
+  z.object({type:z.literal('resize-image'),blockId:z.string().min(1),width:z.number().int().min(48).max(4000)}),
 ]);
 export type DocumentEditOperation=z.infer<typeof documentEditOperationSchema>;
 
