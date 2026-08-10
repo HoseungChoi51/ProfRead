@@ -31,6 +31,7 @@ db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(6,?)').ru
 db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(7,?)').run(new Date().toISOString());
 db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(8,?)').run(new Date().toISOString());
 db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(9,?)').run(new Date().toISOString());
+db.prepare('INSERT OR IGNORE INTO migrations(version,applied_at)VALUES(10,?)').run(new Date().toISOString());
 
 export function now(): string { return new Date().toISOString(); }
 export function rows<T>(sql: string, ...params: any[]): T[] { return db.prepare(sql).all(...params) as T[]; }

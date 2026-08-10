@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS model_definitions (id TEXT PRIMARY KEY, provider_id T
 CREATE TABLE IF NOT EXISTS model_profiles (name TEXT PRIMARY KEY, model_ids_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS task_model_routes (action TEXT PRIMARY KEY, model_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS prompt_template_overrides (key TEXT PRIMARY KEY, template TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS behavior_settings (id TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS context_cache (document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE, tier TEXT NOT NULL, content TEXT NOT NULL, token_estimate INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(document_version_id, tier));
 CREATE TABLE IF NOT EXISTS branch_digests (thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,version INTEGER NOT NULL,message_count INTEGER NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(thread_id,version));
 CREATE TABLE IF NOT EXISTS reading_progress (document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE, block_id TEXT, offset_ratio REAL NOT NULL DEFAULT 0, last_thread_id TEXT, updated_at TEXT NOT NULL);

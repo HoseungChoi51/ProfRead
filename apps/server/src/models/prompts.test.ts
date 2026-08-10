@@ -32,6 +32,7 @@ describe('prompt templates', () => {
       request: 'Explain',
       contract: '',
     })).toContain('User request: Explain');
+    expect(renderPrompt('context.cache-generation', { briefMax: '3000', studyMax: '12000', articleText: 'Article body' })).toContain('Article body');
   });
 
   it('persists overrides and removes them when reset', () => {
@@ -68,6 +69,7 @@ describe('prompt settings API', () => {
       overridden: false,
       variables: ['visualRecapJson'],
     });
+    expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'context.cache-generation')).toMatchObject({ category: 'Context', overridden: false });
     const saved = await app.inject({
       method: 'PUT',
       url: '/api/settings/prompts/contract.explain',

@@ -1,9 +1,10 @@
 import type { TaskAction } from '@afterdraft/shared';
 import { db, now, row, rows } from '../db/index.js';
+import { invalidateContextCaches } from './behavior.js';
 
 export interface PromptTemplateDefinition {
   key: string;
-  category: 'Core' | 'Action requests' | 'Action contracts' | 'Scope' | 'Visual recap' | 'Routing';
+  category: 'Core' | 'Action requests' | 'Action contracts' | 'Scope' | 'Visual recap' | 'Context' | 'Routing';
   label: string;
   description: string;
   defaultTemplate: string;
@@ -204,6 +205,17 @@ User request: {{request}}
     requiredVariables: ['visualRecapJson'],
   },
   {
+    key: 'context.cache-generation',
+    category: 'Context',
+    label: 'Article context cache generation',
+    description: 'Creates the compact and detailed article contexts used when the source is too large to send in full.',
+    defaultTemplate: `Create two faithful contexts from this article. Return JSON only: {"brief":"...","study":"..."}. Brief <= {{briefMax}} tokens. Study <= {{studyMax}} tokens. Preserve definitions, claims, qualifications, and section structure.
+
+{{articleText}}`,
+    variables: ['briefMax', 'studyMax', 'articleText'],
+    requiredVariables: ['briefMax', 'studyMax', 'articleText'],
+  },
+  {
     key: 'routing.classifier-system',
     category: 'Routing',
     label: 'Free-form question classifier',
@@ -260,15 +272,18 @@ export function savePromptTemplate(key: string, template: string): void {
   validatePromptTemplate(key, template);
   if (template === item.defaultTemplate) {
     db.prepare('DELETE FROM prompt_template_overrides WHERE key=?').run(key);
+    if (key === 'context.cache-generation') invalidateContextCaches('Context generation prompt changed');
     return;
   }
   db.prepare(`INSERT INTO prompt_template_overrides(key,template,updated_at) VALUES(?,?,?)
     ON CONFLICT(key) DO UPDATE SET template=excluded.template,updated_at=excluded.updated_at`).run(key, template, now());
+  if (key === 'context.cache-generation') invalidateContextCaches('Context generation prompt changed');
 }
 
 export function resetPromptTemplate(key: string): void {
   definition(key);
   db.prepare('DELETE FROM prompt_template_overrides WHERE key=?').run(key);
+  if (key === 'context.cache-generation') invalidateContextCaches('Context generation prompt reset');
 }
 
 const requestKeys: Partial<Record<TaskAction, PromptTemplateKey>> = {
