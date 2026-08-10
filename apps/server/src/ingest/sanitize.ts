@@ -8,10 +8,11 @@ export interface SanitizedDocument {
 }
 
 const blockSelector = 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,figcaption,table,img,svg,figure,video';
-const allowedTags = sanitizeHtml.defaults.allowedTags.concat(['html','head','body','link','main','article','section','figure','figcaption','picture','video','source','svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol','table','thead','tbody','tfoot','tr','th','td','colgroup','col','details','summary']);
+const allowedTags = sanitizeHtml.defaults.allowedTags.concat(['html','head','body','link','main','article','section','figure','figcaption','picture','img','video','source','iframe','svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol','table','thead','tbody','tfoot','tr','th','td','colgroup','col','details','summary']);
 const allowedAttributes: sanitizeHtml.IOptions['allowedAttributes'] = {
   '*': ['id','class','title','aria-label','aria-describedby','role','data-*'],
   a: ['href','name','target','rel'], img: ['src','alt','width','height','srcset'], video: ['controls','width','height','aria-label'], source: ['src','srcset','type','media'],
+  iframe: ['src','title','width','height','allow','allowfullscreen','loading','referrerpolicy'],
   link: ['href','rel','media'],
   svg: ['viewBox','width','height','xmlns','fill','stroke','aria-label','role'],
   path: ['d','fill','stroke','stroke-width'], g: ['transform','fill','stroke'], circle: ['cx','cy','r','fill','stroke'],
@@ -21,6 +22,17 @@ const allowedAttributes: sanitizeHtml.IOptions['allowedAttributes'] = {
 };
 
 const remoteOrDangerous = /^(?:https?:|data:|javascript:|vbscript:|file:|\/\/)/i;
+const embeddedImagePattern = /^data:(image\/(?:png|jpeg|gif|webp));base64,([a-z0-9+/=\s]+)$/i;
+function safeEmbeddedImage(value:string):string|null{
+  const match=value.match(embeddedImagePattern);if(!match)return null;
+  const mime=match[1]!.toLowerCase(),payload=match[2]!.replace(/\s+/g,'');if(payload.length>12*1024*1024||payload.length%4===1)return null;
+  const bytes=Buffer.from(payload,'base64'),canonical=bytes.toString('base64').replace(/=+$/,'');if(!bytes.length||bytes.length>8*1024*1024||canonical!==payload.replace(/=+$/,''))return null;
+  const valid=mime==='image/png'?bytes.length>=8&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])):mime==='image/jpeg'?bytes.length>=2&&bytes[0]===0xff&&bytes[1]===0xd8:mime==='image/gif'?bytes.length>=6&&['GIF87a','GIF89a'].includes(bytes.subarray(0,6).toString('ascii')):bytes.length>=12&&bytes.subarray(0,4).toString('ascii')==='RIFF'&&bytes.subarray(8,12).toString('ascii')==='WEBP';
+  return valid?`data:${mime};base64,${payload}`:null;
+}
+function safeYoutubeEmbed(value:string):string|null{
+  try{const url=new URL(value);if(url.protocol!=='https:'||!['youtube.com','www.youtube.com','youtube-nocookie.com','www.youtube-nocookie.com'].includes(url.hostname)||!/^\/embed\/[A-Za-z0-9_-]{6,}$/.test(url.pathname))return null;const safe=new URL(`https://www.youtube-nocookie.com${url.pathname}`);for(const key of ['start','autoplay','controls','rel','loop','mute','cc_lang_pref','cc_load_policy','hl'])if(url.searchParams.has(key))safe.searchParams.set(key,url.searchParams.get(key)!);return safe.toString()}catch{return null}
+}
 export function normalizeAssetPath(base: string, value: string): string | null {
   const clean = value.split(/[?#]/, 1)[0]?.replaceAll('\\', '/') ?? '';
   if (!clean || remoteOrDangerous.test(clean) || clean.startsWith('/')) return null;
@@ -42,15 +54,16 @@ export function sanitizeDocument(source: string, entryPath: string, assetUrl: (p
   const $source = cheerio.load(source),sourceTitle=$source('title').first().text().replace(/\s+/g,' ').trim();
   const rewrite = (value: string): string | null => { const path = normalizeAssetPath(entryDir, value); return path ? assetUrl(path) : null; };
   let cleaned = sanitizeHtml(source, {
-    allowedTags, allowedAttributes, allowedSchemes: [], allowProtocolRelative: false,
-    disallowedTagsMode: 'discard', nonTextTags: ['script','style','textarea','xmp','iframe','noembed','noframes','plaintext','form','object','embed'],
+    allowedTags, allowedAttributes, allowedSchemes: [], allowedSchemesByTag:{img:['data'],iframe:['https']}, allowProtocolRelative: false,
+    disallowedTagsMode: 'discard', nonTextTags: ['script','style','textarea','xmp','noembed','noframes','plaintext','form','object','embed'],
     transformTags: {
       a: (_tag, attrs) => ({ tagName: 'a', attribs: { ...attrs, href: '#', 'data-original-href': attrs.href ?? '', rel: 'noopener noreferrer' } }),
-      img: (_tag, attrs) => ({ tagName: 'img', attribs: { ...attrs, src: rewrite(attrs.src ?? '') ?? '', srcset: '' } }),
+      img: (_tag, attrs) => ({ tagName: 'img', attribs: { ...attrs, src: safeEmbeddedImage(attrs.src??'')??rewrite(attrs.src ?? '')??'', srcset: '' } }),
+      iframe:(_tag,attrs)=>{const src=safeYoutubeEmbed(attrs.src??'');return src?{tagName:'iframe',attribs:{src,title:attrs.title??'YouTube video player',width:attrs.width??'560',height:attrs.height??'315',allow:'accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share',allowfullscreen:'',loading:'lazy',referrerpolicy:'strict-origin-when-cross-origin'}}:{tagName:'span',attribs:{}}},
       source: (_tag, attrs) => ({ tagName: 'source', attribs: { ...attrs, src: rewrite(attrs.src ?? '') ?? '', srcset: '' } }),
       link: (_tag,attrs)=>({tagName:'link',attribs:{rel:attrs.rel?.toLowerCase()==='stylesheet'?'stylesheet':'',href:attrs.rel?.toLowerCase()==='stylesheet'?(rewrite(attrs.href??'')??''):'',...(attrs.media?{media:attrs.media}:{})}}),
     },
-    exclusiveFilter: frame => ['iframe','form','object','embed'].includes(frame.tag),
+    exclusiveFilter: frame => ['form','object','embed'].includes(frame.tag),
   });
   const styles = $source('style').map((_i, el) => safeCss($source(el).html() ?? '', rewrite)).get().join('\n');
   const $ = cheerio.load(cleaned); $('*').each((_i, el) => {

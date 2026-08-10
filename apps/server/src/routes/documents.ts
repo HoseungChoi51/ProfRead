@@ -42,7 +42,8 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     if (!version) return reply.code(404).send('Not found');
     const nonce = randomBytes(18).toString('base64url'); const source=await readEffectiveHtml(version.id),html=source.replace(/<script[^>]*nonce="__CO_READER_NONCE__"[^>]*>[^]*?<\/script>/gi,'').replace('</head>',`${responsiveReaderStyle}<style id="co-reader-current">${READER_CSS}</style></head>`).replace('</body>',`<script nonce="${nonce}">${BRIDGE}</script></body>`);
     return reply.header('content-type','text/html; charset=utf-8').header('cache-control','private, no-store')
-      .header('content-security-policy', `sandbox allow-scripts; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html);
+      .header('referrer-policy','strict-origin-when-cross-origin')
+      .header('content-security-policy', `sandbox allow-scripts allow-same-origin allow-presentation; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html);
   });
   app.get('/api/assets/:versionId/:assetId', async (request, reply) => {
     const { versionId, assetId } = request.params as { versionId:string; assetId:string };

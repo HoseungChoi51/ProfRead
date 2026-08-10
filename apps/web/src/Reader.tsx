@@ -1000,7 +1000,7 @@ export function Reader({
             ref={iframe}
             title={doc.title}
             src={`/api/versions/${doc.version_id}/content`}
-            sandbox="allow-scripts"
+            sandbox="allow-scripts allow-same-origin allow-presentation"
           />
         </section>
         <aside className="margin" aria-label="Discussion margin">
