@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api, stream } from "./api.js";
 type DocumentInfo = {
   id: string;
@@ -85,6 +87,17 @@ const actionLabels = {
   visualize: "Visualize",
   research: "Research",
 } as const;
+const SIDEBAR_MIN = 420;
+const SIDEBAR_MAX = 960;
+const sidebarLimit = () =>
+  Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, window.innerWidth - 360));
+const clampSidebar = (value: number) =>
+  Math.min(sidebarLimit(), Math.max(SIDEBAR_MIN, value));
+function closeSummaryMenus(): void {
+  document
+    .querySelectorAll<HTMLDetailsElement>(".summary-menu[open]")
+    .forEach((menu) => (menu.open = false));
+}
 
 export function Reader({
   documentId,
@@ -117,7 +130,11 @@ export function Reader({
     [captionDraft, setCaptionDraft] = useState<EditContext | null>(null),
     [historyOpen, setHistoryOpen] = useState(false),
     [savingEdits, setSavingEdits] = useState(false),
-    [contentEpoch, setContentEpoch] = useState(0);
+    [contentEpoch, setContentEpoch] = useState(0),
+    [sidebarWidth, setSidebarWidth] = useState(() => {
+      const stored = Number(localStorage.getItem("afterdraft-sidebar-width"));
+      return clampSidebar(Number.isFinite(stored) && stored ? stored : 640);
+    });
   const iframe = useRef<HTMLIFrameElement>(null),
     toolbar = useRef<HTMLDivElement>(null),
     aborter = useRef<AbortController | null>(null),
@@ -196,6 +213,11 @@ export function Reader({
         return;
       if (event.data.type === "selection")
         setSelection({ ...event.data, blockType: "text" });
+      if (event.data.type === "background-click") {
+        setSelection(null);
+        setEditContext(null);
+        closeSummaryMenus();
+      }
       if (event.data.type === "block-selection")
         setSelection({
           blockId: event.data.blockId,
@@ -286,6 +308,31 @@ export function Reader({
     addEventListener("message", receive);
     return () => removeEventListener("message", receive);
   }, [threads, highlights, doc?.offset_ratio, editMode]);
+  useEffect(() => {
+    localStorage.setItem("afterdraft-sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+  useEffect(() => {
+    const fit = () => setSidebarWidth((current) => clampSidebar(current));
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          ".selection-tools,.edit-context-menu,.summary-menu,.edit-dialog",
+        )
+      )
+        return;
+      setSelection(null);
+      setEditContext(null);
+      closeSummaryMenus();
+    };
+    addEventListener("resize", fit);
+    document.addEventListener("pointerdown", dismiss);
+    return () => {
+      removeEventListener("resize", fit);
+      document.removeEventListener("pointerdown", dismiss);
+    };
+  }, []);
   useEffect(() => {
     iframe.current?.contentWindow?.postMessage(
       {
@@ -902,10 +949,19 @@ export function Reader({
     });
     await loadArtifacts();
   }
+  function resizeSidebar(event: React.PointerEvent<HTMLDivElement>) {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (bounds) setSidebarWidth(clampSidebar(bounds.right - event.clientX));
+  }
+  function finishSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    document.body.classList.remove("afterdraft-resizing-sidebar");
+  }
   return (
     <main
       className={`reader-shell ${drawer ? "drawer-open" : ""} ${editMode ? "editing" : ""}`}
-      onClick={() => editContext && setEditContext(null)}
     >
       <header className="reader-header">
         <button className="quiet" onClick={backToLibrary}>
@@ -993,7 +1049,10 @@ export function Reader({
           <button onClick={() => setError("")}>×</button>
         </div>
       )}
-      <div className="reader-grid">
+      <div
+        className="reader-grid"
+        style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
+      >
         <section className="paper">
           <iframe
             key={contentEpoch}
@@ -1003,6 +1062,34 @@ export function Reader({
             sandbox="allow-scripts allow-same-origin allow-presentation"
           />
         </section>
+        <div
+          className="reader-divider"
+          role="separator"
+          aria-label="Resize article and sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={SIDEBAR_MIN}
+          aria-valuemax={sidebarLimit()}
+          aria-valuenow={sidebarWidth}
+          tabIndex={drawer ? 0 : -1}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            document.body.classList.add("afterdraft-resizing-sidebar");
+          }}
+          onPointerMove={resizeSidebar}
+          onPointerUp={finishSidebarResize}
+          onPointerCancel={finishSidebarResize}
+          onKeyDown={(event) => {
+            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+              event.preventDefault();
+            if (event.key === "ArrowLeft")
+              setSidebarWidth((current) => clampSidebar(current + 20));
+            if (event.key === "ArrowRight")
+              setSidebarWidth((current) => clampSidebar(current - 20));
+            if (event.key === "Home") setSidebarWidth(SIDEBAR_MIN);
+            if (event.key === "End") setSidebarWidth(sidebarLimit());
+          }}
+        />
         <aside className="margin" aria-label="Discussion margin">
           <nav className="entry-pane" aria-label="Reader entries">
             <h2>Entries</h2>
@@ -1456,7 +1543,13 @@ function ArtifactCard({
       ) : artifact.kind === "visual-recap" ? (
         <VisualRecap recap={artifact.content} />
       ) : (
-        <p>{String(artifact.content)}</p>
+        <MarkdownContent
+          content={
+            typeof artifact.content === "string"
+              ? artifact.content
+              : JSON.stringify(artifact.content, null, 2)
+          }
+        />
       )}
       <small>Sources: {artifact.sourceRefs.join(", ")}</small>
     </article>
@@ -1530,17 +1623,19 @@ function VisualRecap({ recap }: { recap: any }) {
       <details className="recap-details">
         <summary>Show textual recap</summary>
         <h3>{recap?.title}</h3>
-        <p>{recap?.thesis}</p>
+        <MarkdownContent content={String(recap?.thesis ?? "")} />
         {(recap?.sections ?? []).map((section: any, index: number) => (
           <section key={index}>
             <h4>{section.title}</h4>
-            <p>{section.summary}</p>
+            <MarkdownContent content={String(section.summary ?? "")} />
           </section>
         ))}
         <h4>Takeaways</h4>
         <ul>
           {(recap?.takeaways ?? []).map((item: string, index: number) => (
-            <li key={index}>{item}</li>
+            <li key={index}>
+              <MarkdownContent content={item} />
+            </li>
           ))}
         </ul>
       </details>
@@ -1578,20 +1673,7 @@ function ThreadCard({
       {thread.messages.map((message) => (
         <div key={message.id} className={`message ${message.role}`}>
           <span>{message.role === "assistant" ? "AfterDraft" : "You"}</span>
-          <div
-            onMouseUp={() => {
-              if (message.role !== "assistant" || message.id === "draft")
-                return;
-              const text = getSelection()?.toString().trim();
-              if (
-                text &&
-                confirm(`Ask a nested follow-up about “${text.slice(0, 80)}”?`)
-              )
-                onNestedAction(message.id, text, "ask");
-            }}
-          >
-            {message.content}
-          </div>
+          <MarkdownContent content={message.content} />
           {message.role === "assistant" && message.id !== "draft" && (
             <div className="message-actions">
               <button
@@ -1651,5 +1733,30 @@ function ThreadCard({
         <button disabled={running || !reply.trim()}>Send</button>
       </form>
     </article>
+  );
+}
+
+export function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-output">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+        components={{
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer noopener">
+              {children}
+            </a>
+          ),
+          img: ({ alt }) => (
+            <span className="markdown-image-label">
+              {alt ? `[Image: ${alt}]` : "[Image]"}
+            </span>
+          ),
+        }}
+      >
+        {content}
+      </Markdown>
+    </div>
   );
 }
