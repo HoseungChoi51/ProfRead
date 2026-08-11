@@ -105,6 +105,8 @@ describe('v0.2 semantic reader data',()=>{
     expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'  A concise note.  '}})).statusCode).toBe(200);
     const listed=JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/threads`,headers:readHeaders()})).body),saved=listed.find((entry:{id:string})=>entry.id===thread.id);
     expect(saved).toMatchObject({annotation_text:'A concise note.',local_start_offset:0,local_end_offset:'Annotated passage'.length});
+    expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'🙂'.repeat(500)}})).statusCode).toBe(200);
+    expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'🙂'.repeat(501)}})).statusCode).toBe(400);
     expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'x'.repeat(501)}})).statusCode).toBe(400);
     const removed=await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:null}});
     expect(JSON.parse(removed.body)).toMatchObject({ok:true,text:null});
@@ -167,27 +169,34 @@ describe('v0.2 semantic reader data',()=>{
     const item=await anchoredDocument('<title>Freshness</title><p>Summary source text</p>'),anchor=await createAnchor(item.versionId!,item.block,'Summary source text',0),artifactPayload={documentVersionId:item.versionId,kind:'tldr',scopeType:'document',scopeId:item.documentId,content:'Initial summary',sourceRefs:[item.versionId],promoted:false};
     const created=await app.inject({method:'POST',url:'/api/artifacts',headers:writeHeaders(),payload:artifactPayload});
     expect(created.statusCode).toBe(201);
-    const artifact=JSON.parse(created.body) as{id:string};
-    const artifacts=async()=>JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/artifacts`,headers:readHeaders()})).body) as Array<{id:string;freshness:{status:string;reasons:string[]}}>;
+    const artifact=JSON.parse(created.body) as{id:string;version:number};
+    expect(artifact.version).toBe(1);
+    const replaced=await app.inject({method:'POST',url:'/api/artifacts',headers:writeHeaders(),payload:{...artifactPayload,content:'Updated summary'}});
+    expect(replaced.statusCode).toBe(200);
+    expect(JSON.parse(replaced.body)).toMatchObject({id:artifact.id,version:2,content:'Updated summary'});
+    const artifacts=async()=>JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/artifacts`,headers:readHeaders()})).body) as Array<{id:string;version:number;freshness:{status:string;reasons:string[]}}>;
+    const acceptCurrent=async(expectedArtifactVersion:number)=>app.inject({method:'POST',url:`/api/artifacts/${artifact.id}/accept-current-basis`,headers:writeHeaders(),payload:{expectedArtifactVersion}});
     expect((await artifacts())[0]!.freshness).toEqual({status:'current',reasons:[]});
 
     const question=await app.inject({method:'POST',url:'/api/highlights',headers:writeHeaders(),payload:{anchorId:anchor.id,kind:'question',note:null}}),questionId=JSON.parse(question.body).id as string;
     expect((await artifacts())[0]!.freshness).toEqual({status:'current',reasons:[]});
     await app.inject({method:'PATCH',url:`/api/highlights/${questionId}`,headers:writeHeaders(),payload:{kind:'important',note:null}});
     expect((await artifacts())[0]!.freshness).toEqual({status:'needs-review',reasons:['reader-signals-changed']});
-    const accepted=await app.inject({method:'POST',url:`/api/artifacts/${artifact.id}/accept-current-basis`,headers:writeHeaders()});
-    expect(JSON.parse(accepted.body).freshness).toEqual({status:'current',reasons:[]});
+    expect((await app.inject({method:'POST',url:`/api/artifacts/${artifact.id}/accept-current-basis`,headers:writeHeaders()})).statusCode).toBe(400);
+    expect((await acceptCurrent(1)).statusCode).toBe(409);
+    const accepted=await acceptCurrent(2);
+    expect(JSON.parse(accepted.body)).toMatchObject({version:3,freshness:{status:'current',reasons:[]}});
 
     db.prepare('INSERT INTO document_edit_revisions(id,document_version_id,revision,edited_html_path,canonical_text,base_title,summary_json,restored_from_revision,created_at)VALUES(?,?,?,?,?,?,?,?,?)').run(randomUUID(),item.versionId,1,'/tmp/v02-freshness.html','Summary source text','Freshness','{}',null,now());
     expect((await artifacts())[0]!.freshness).toEqual({status:'needs-review',reasons:['document-edits-changed']});
-    await app.inject({method:'POST',url:`/api/artifacts/${artifact.id}/accept-current-basis`,headers:writeHeaders()});
+    expect((await acceptCurrent(3)).statusCode).toBe(200);
     const next=await importSource({buffer:Buffer.from('<title>Freshness next</title><p>Summary source text changed</p>'),filename:`next-${randomUUID()}.html`,mimeType:'text/html',documentId:item.documentId});
     expect(next.versionId).not.toBe(item.versionId);
     const changed=(await artifacts())[0]!.freshness;
     expect(changed.status).toBe('needs-review');
     expect(changed.reasons).toContain('document-version-changed');
 
-    await app.inject({method:'POST',url:`/api/artifacts/${artifact.id}/accept-current-basis`,headers:writeHeaders()});
+    expect((await acceptCurrent(4)).statusCode).toBe(200);
     expect(row<{document_version_id:string}>('SELECT document_version_id FROM artifacts WHERE id=?',artifact.id)?.document_version_id).toBe(next.versionId);
 
     db.prepare('UPDATE artifacts SET basis_document_version_id=NULL,basis_revision=NULL,basis_signal_hash=NULL WHERE id=?').run(artifact.id);

@@ -71,6 +71,66 @@ if(!migration11Applied){
   }catch(error){db.exec('ROLLBACK');throw error}
 }
 
+const migration12Applied=db.prepare('SELECT 1 FROM migrations WHERE version=12').get();
+if(!migration12Applied){
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    const threadColumns=db.prepare('PRAGMA table_info(threads)').all() as Array<{name:string}>;
+    if(!threadColumns.some(column=>column.name==='kind'))db.exec("ALTER TABLE threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'discussion'");
+    if(!threadColumns.some(column=>column.name==='annotation_candidate_text'))db.exec('ALTER TABLE threads ADD COLUMN annotation_candidate_text TEXT');
+    if(!threadColumns.some(column=>column.name==='annotation_candidate_source_message_id'))db.exec('ALTER TABLE threads ADD COLUMN annotation_candidate_source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL');
+    if(!threadColumns.some(column=>column.name==='annotation_candidate_status'))db.exec('ALTER TABLE threads ADD COLUMN annotation_candidate_status TEXT');
+    if(!threadColumns.some(column=>column.name==='annotation_candidate_created_at'))db.exec('ALTER TABLE threads ADD COLUMN annotation_candidate_created_at TEXT');
+    const revisionColumns=db.prepare('PRAGMA table_info(document_edit_revisions)').all() as Array<{name:string}>;
+    if(!revisionColumns.some(column=>column.name==='origin_type'))db.exec("ALTER TABLE document_edit_revisions ADD COLUMN origin_type TEXT NOT NULL DEFAULT 'manual'");
+    if(!revisionColumns.some(column=>column.name==='origin_id'))db.exec('ALTER TABLE document_edit_revisions ADD COLUMN origin_id TEXT');
+    db.exec(`CREATE TABLE IF NOT EXISTS writer_sources(
+      id TEXT PRIMARY KEY,thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      source_type TEXT NOT NULL CHECK(source_type IN ('message','thread-annotation','artifact','highlight')),source_id TEXT NOT NULL,
+      label TEXT NOT NULL,anchor_id TEXT,snapshot_json TEXT NOT NULL,snapshot_hash TEXT NOT NULL,created_at TEXT NOT NULL,
+      UNIQUE(thread_id,source_type,source_id));
+      CREATE TABLE IF NOT EXISTS writer_proposals(
+      id TEXT PRIMARY KEY,thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      model_run_id TEXT NOT NULL UNIQUE REFERENCES model_runs(id) ON DELETE CASCADE,
+      document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+      base_revision INTEGER NOT NULL,base_html_hash TEXT NOT NULL,source_hash TEXT NOT NULL,
+      source_snapshot_json TEXT NOT NULL,instruction TEXT NOT NULL,title TEXT NOT NULL,summary TEXT NOT NULL,changes_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','applied','dismissed','superseded')),
+      applied_revision INTEGER,applied_change_ids_json TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,applied_at TEXT);
+      CREATE TABLE IF NOT EXISTS summary_reviews(
+      id TEXT PRIMARY KEY,artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+      model_run_id TEXT NOT NULL UNIQUE REFERENCES model_runs(id) ON DELETE CASCADE,
+      document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+      artifact_version INTEGER NOT NULL,basis_revision INTEGER NOT NULL,basis_signal_hash TEXT NOT NULL,snapshot_json TEXT NOT NULL,
+      decision TEXT CHECK(decision IS NULL OR decision IN ('KEEP','REPLACE')),result_json TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','applied','superseded','failed','cancelled')),
+      created_at TEXT NOT NULL,applied_at TEXT);
+      CREATE UNIQUE INDEX IF NOT EXISTS threads_one_writer_per_document_idx ON threads(document_id) WHERE kind='writer';
+      CREATE UNIQUE INDEX IF NOT EXISTS writer_proposals_one_draft_per_thread_idx ON writer_proposals(thread_id) WHERE status='draft';
+      CREATE UNIQUE INDEX IF NOT EXISTS model_runs_one_active_writer_idx ON model_runs(thread_id) WHERE action='document-write' AND status='running';
+      CREATE UNIQUE INDEX IF NOT EXISTS edit_revisions_origin_idx ON document_edit_revisions(origin_type,origin_id) WHERE origin_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS summary_reviews_one_pending_per_artifact_idx ON summary_reviews(artifact_id) WHERE status='pending';
+      CREATE TRIGGER IF NOT EXISTS threads_kind_insert_guard BEFORE INSERT ON threads WHEN NEW.kind NOT IN ('discussion','writer') BEGIN SELECT RAISE(ABORT,'Invalid thread kind'); END;
+      CREATE TRIGGER IF NOT EXISTS threads_kind_update_guard BEFORE UPDATE OF kind ON threads WHEN NEW.kind NOT IN ('discussion','writer') BEGIN SELECT RAISE(ABORT,'Invalid thread kind'); END;
+      CREATE TRIGGER IF NOT EXISTS threads_annotation_candidate_insert_guard BEFORE INSERT ON threads WHEN NEW.annotation_candidate_status IS NOT NULL AND NEW.annotation_candidate_status NOT IN ('pending','accepted','dismissed') BEGIN SELECT RAISE(ABORT,'Invalid annotation candidate status'); END;
+      CREATE TRIGGER IF NOT EXISTS threads_annotation_candidate_update_guard BEFORE UPDATE OF annotation_candidate_status ON threads WHEN NEW.annotation_candidate_status IS NOT NULL AND NEW.annotation_candidate_status NOT IN ('pending','accepted','dismissed') BEGIN SELECT RAISE(ABORT,'Invalid annotation candidate status'); END;`);
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(12,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+}
+
+// In-memory provider controllers cannot survive a process restart. Mark every
+// durable "running" row terminal now so idempotent request replay and the
+// one-active-Writer/review guards cannot remain stuck forever.
+const interruptedAt=new Date().toISOString(),interruptedError='Interrupted by service restart';
+db.exec('BEGIN IMMEDIATE');
+try{
+  db.prepare("UPDATE summary_reviews SET status='failed',result_json=? WHERE status='pending'").run(JSON.stringify({error:interruptedError}));
+  db.prepare("UPDATE model_attempts SET status='failed',error=?,completed_at=? WHERE status='running'").run(interruptedError,interruptedAt);
+  db.prepare("UPDATE model_runs SET status='failed',error=?,completed_at=? WHERE status='running'").run(interruptedError,interruptedAt);
+  db.exec('COMMIT');
+}catch(error){db.exec('ROLLBACK');throw error}
+
 export function now(): string { return new Date().toISOString(); }
 export function rows<T>(sql: string, ...params: any[]): T[] { return db.prepare(sql).all(...params) as T[]; }
 export function row<T>(sql: string, ...params: any[]): T | undefined { return db.prepare(sql).get(...params) as T | undefined; }

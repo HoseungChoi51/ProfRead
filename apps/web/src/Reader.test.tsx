@@ -7,6 +7,7 @@ import {
   copyTextToClipboard,
   deriveThreadPreview,
   HighlightCard,
+  limitUnicodeCodePoints,
   MarkdownContent,
   normalizeThreadPreview,
   placeSelectionPopover,
@@ -16,10 +17,13 @@ import {
   retryRequestId,
   shouldSubmitComposerKey,
   shouldKeepPopoverPlacement,
+  summaryReviewRequestIdentity,
+  threadAnnotationCandidate,
   threadReplyRetryRequestId,
   ThreadCard,
   translateIframeRect,
   tryAcquireLock,
+  writerRequestIdentity,
 } from "./Reader.js";
 
 describe("selection popover geometry", () => {
@@ -247,12 +251,86 @@ describe("v0.2 Reader policies and cards", () => {
     expect(tryAcquireLock(lock)).toBe(true);
   });
 
+  it("reuses retries only for the same model and exact Writer/review basis", () => {
+    const writer = {
+      instruction: "Revise the opening.",
+      modelOverride: "",
+      documentVersionId: "version-1",
+      revision: 2,
+      sources: [{ id: "source-1", snapshotHash: "hash-1" }],
+    };
+    expect(
+      writerRequestIdentity({
+        ...writer,
+        sources: [...writer.sources].reverse(),
+      }),
+    ).toBe(writerRequestIdentity(writer));
+    expect(
+      writerRequestIdentity({ ...writer, modelOverride: "another-model" }),
+    ).not.toBe(writerRequestIdentity(writer));
+    expect(
+      writerRequestIdentity({
+        ...writer,
+        sources: [{ id: "source-1", snapshotHash: "changed" }],
+      }),
+    ).not.toBe(writerRequestIdentity(writer));
+
+    const review = {
+      artifactId: "artifact-1",
+      artifactVersion: 3,
+      documentVersionId: "version-1",
+      revision: 2,
+      modelOverride: "",
+      signals: [
+        {
+          id: "important-1",
+          kind: "important" as const,
+          exactQuote: "Priority",
+          note: null,
+        },
+        {
+          id: "question-1",
+          kind: "question" as const,
+          exactQuote: "Open?",
+          note: null,
+        },
+      ],
+    };
+    expect(
+      summaryReviewRequestIdentity({
+        ...review,
+        signals: review.signals.map((signal) =>
+          signal.id === "question-1"
+            ? { ...signal, exactQuote: "Changed open question?" }
+            : signal,
+        ),
+      }),
+    ).toBe(summaryReviewRequestIdentity(review));
+    expect(
+      summaryReviewRequestIdentity({
+        ...review,
+        revision: 3,
+      }),
+    ).not.toBe(summaryReviewRequestIdentity(review));
+    expect(
+      summaryReviewRequestIdentity({
+        ...review,
+        signals: review.signals.map((signal) =>
+          signal.id === "important-1"
+            ? { ...signal, note: "New reader priority" }
+            : signal,
+        ),
+      }),
+    ).not.toBe(summaryReviewRequestIdentity(review));
+  });
+
   it("renders deterministic summary freshness controls", () => {
     const html = renderToStaticMarkup(
       <ArtifactCard
         artifact={{
           id: "artifact-1",
           kind: "tldr",
+          version: 3,
           content: "Existing summary",
           sourceRefs: ["version-1"],
           promoted: false,
@@ -262,11 +340,37 @@ describe("v0.2 Reader policies and cards", () => {
             status: "needs-review",
             reasons: ["reader-signals-changed"],
           },
+          latestReview: {
+            id: "review-1",
+            status: "applied",
+            decision: "KEEP",
+            rationale: "The existing summary already covers the new signal.",
+            sourceStatus: "adequate",
+            modelId: "gpt-test",
+            artifactVersion: 2,
+            basis: {
+              documentVersionId: "version-1",
+              revision: 4,
+              signalHash: "signal-hash",
+            },
+            createdAt: "2026-08-11T00:00:00.000Z",
+            appliedAt: "2026-08-11T00:01:00.000Z",
+          },
         }}
         busy={false}
+        models={[
+          {
+            id: "gpt-test",
+            label: "Test model",
+            providerId: "openai",
+            ready: true,
+          },
+        ]}
         onPromote={() => {}}
         onRegenerate={() => {}}
         onAcceptCurrent={() => {}}
+        onReview={() => {}}
+        onReviewModelChange={() => {}}
       />,
     );
 
@@ -274,6 +378,9 @@ describe("v0.2 Reader policies and cards", () => {
     expect(html).toContain("important highlights or comments changed");
     expect(html).toContain("Keep current");
     expect(html).toContain("Regenerate");
+    expect(html).toContain("Review changes");
+    expect(html).toContain("Automatic model");
+    expect(html).toContain("The existing summary already covers");
   });
 
   it("renders semantic highlight editing and curated thread annotations", () => {
@@ -324,7 +431,10 @@ describe("v0.2 Reader policies and cards", () => {
         annotationDraft="A concise saved annotation."
         onAnnotationDraftChange={() => {}}
         onSaveAnnotation={async () => true}
+        onDismissAnnotationCandidate={async () => true}
         onPolishAnnotation={async () => true}
+        onAddAnnotationToWriter={() => {}}
+        onAddMessageToWriter={() => {}}
         onCopy={async () => {}}
       />,
     );
@@ -368,6 +478,7 @@ describe("anchored thread previews", () => {
   ): Parameters<typeof deriveThreadPreview>[1][number] => ({
     id: "compact-1",
     kind: "compact",
+    version: 1,
     content: "Compact note",
     sourceRefs: ["answer-1"],
     promoted: false,
@@ -384,6 +495,35 @@ describe("anchored thread previews", () => {
     );
 
     expect(result).toEqual({ text: "Curated reader note.", source: "annotation" });
+  });
+
+  it("uses only pending unsaved annotation candidates ahead of generated notes", () => {
+    const pending = {
+      ...thread(),
+      annotation_candidate_text: "Suggested from the completed answer.",
+      annotation_candidate_status: "pending" as const,
+    };
+
+    expect(threadAnnotationCandidate(pending)).toBe(
+      "Suggested from the completed answer.",
+    );
+    expect(deriveThreadPreview(pending, [compact({})])).toEqual({
+      text: "Suggested from the completed answer.",
+      source: "candidate",
+    });
+    expect(
+      deriveThreadPreview(
+        { ...pending, annotation_candidate_status: "dismissed" },
+        [compact({})],
+      ),
+    ).toEqual({ text: "Compact note", source: "thread-compact" });
+  });
+
+  it("limits annotation drafts by Unicode code point rather than UTF-16 unit", () => {
+    expect(limitUnicodeCodePoints("🙂".repeat(500), 500)).toHaveLength(1000);
+    expect(Array.from(limitUnicodeCodePoints("🙂".repeat(501), 500))).toHaveLength(
+      500,
+    );
   });
 
   it("chooses the newest compact note applicable to the thread or its answers", () => {

@@ -25,6 +25,8 @@ describe('prompt templates', () => {
     expect(requestForAction('ask', 'Why does that follow?', 'answer')).toBe('Why does that follow?');
     expect(requestForAction('polish-note', 'causal caveat; clarify scope', 'thread')).toContain('causal caveat; clarify scope');
     expect(contractForAction('polish-note')).toContain('one or two complete sentences');
+    expect(contractForAction('document-write')).toContain('propose_document_edits');
+    expect(contractForAction('review-summary')).toContain('review_summary');
     for (const action of ['summarize', 'tldr', 'half-page', 'visual-recap'] as const) {
       expect(contractForAction(action)).toContain('[IMPORTANT]');
       expect(contractForAction(action)).toContain('[READER COMMENT]');
@@ -42,6 +44,9 @@ describe('prompt templates', () => {
       contract: '',
     })).toContain('User request: Explain');
     expect(renderPrompt('context.cache-generation', { briefMax: '3000', studyMax: '12000', articleText: 'Article body' })).toContain('Article body');
+    expect(renderPrompt('writer.envelope',{documentJson:'[{"id":"b1"}]',sourceSnapshots:'[]',writerConversation:'',previousProposal:'(none)',instruction:'Improve clarity',contract:contractForAction('document-write')})).toContain('Improve clarity');
+    const review=renderPrompt('summary-review.envelope',{articleText:'Current article',artifactKind:'tldr',existingSummary:'"Existing"',freshnessReasons:'reader-signals-changed',readerSignals:'[]',contract:contractForAction('review-summary')});
+    expect(review).toContain('Complete current article');expect(review).toContain('Prefer KEEP');expect(review).toContain('replacement to null');expect(review).toContain('explanation; use null');
   });
 
   it('persists overrides and removes them when reset', () => {
@@ -85,6 +90,8 @@ describe('prompt settings API', () => {
     expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'request.polish-note')).toMatchObject({ category: 'Action requests', variables: ['draft'] });
     const modelSettings = await app.inject({ method: 'GET', url: '/api/settings/models', headers: { cookie } });
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'polish-note', modelId: 'gpt-5.6-luna' });
+    expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'document-write', modelId: 'gpt-5.6-sol' });
+    expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'review-summary', modelId: 'gpt-5.6-terra' });
     const saved = await app.inject({
       method: 'PUT',
       url: '/api/settings/prompts/contract.explain',

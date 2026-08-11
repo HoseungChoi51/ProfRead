@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS document_versions (
 CREATE TABLE IF NOT EXISTS document_edit_revisions (
  id TEXT PRIMARY KEY, document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
  revision INTEGER NOT NULL, edited_html_path TEXT NOT NULL, canonical_text TEXT NOT NULL, base_title TEXT NOT NULL,
- summary_json TEXT NOT NULL, restored_from_revision INTEGER, created_at TEXT NOT NULL,
+ summary_json TEXT NOT NULL, restored_from_revision INTEGER, origin_type TEXT NOT NULL DEFAULT 'manual', origin_id TEXT, created_at TEXT NOT NULL,
  UNIQUE(document_version_id, revision));
 CREATE TABLE IF NOT EXISTS assets (
  id TEXT PRIMARY KEY, document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
@@ -28,16 +28,37 @@ CREATE TABLE IF NOT EXISTS anchors (
  exact_quote TEXT NOT NULL, prefix_text TEXT NOT NULL, suffix_text TEXT NOT NULL, start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,
  block_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'attached', migrated_from_id TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS highlights (id TEXT PRIMARY KEY, anchor_id TEXT NOT NULL REFERENCES anchors(id) ON DELETE CASCADE, checked INTEGER NOT NULL DEFAULT 0, color TEXT NOT NULL DEFAULT 'yellow', kind TEXT NOT NULL DEFAULT 'important', note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, anchor_id TEXT REFERENCES anchors(id) ON DELETE SET NULL, parent_message_id TEXT, title TEXT, annotation_text TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, anchor_id TEXT REFERENCES anchors(id) ON DELETE SET NULL, parent_message_id TEXT, title TEXT, annotation_text TEXT, kind TEXT NOT NULL DEFAULT 'discussion' CHECK(kind IN ('discussion','writer')), annotation_candidate_text TEXT, annotation_candidate_source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL, annotation_candidate_status TEXT CHECK(annotation_candidate_status IS NULL OR annotation_candidate_status IN ('pending','accepted','dismissed')), annotation_candidate_created_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, parent_message_id TEXT REFERENCES messages(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS writer_sources (
+ id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+ source_type TEXT NOT NULL CHECK(source_type IN ('message','thread-annotation','artifact','highlight')), source_id TEXT NOT NULL,
+ label TEXT NOT NULL, anchor_id TEXT, snapshot_json TEXT NOT NULL, snapshot_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+ UNIQUE(thread_id,source_type,source_id));
 CREATE TABLE IF NOT EXISTS model_runs (
  id TEXT PRIMARY KEY, thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL, request_id TEXT NOT NULL UNIQUE, action TEXT NOT NULL,
  provider_id TEXT, model_id TEXT, profile TEXT NOT NULL, routing_reason TEXT NOT NULL, context_tier TEXT NOT NULL, fallback_model_id TEXT,
  status TEXT NOT NULL, ttft_ms INTEGER, latency_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER, provider_response_id TEXT, response_text TEXT, error TEXT, created_at TEXT NOT NULL, completed_at TEXT);
 CREATE TABLE IF NOT EXISTS model_attempts (id TEXT PRIMARY KEY,model_run_id TEXT NOT NULL REFERENCES model_runs(id) ON DELETE CASCADE,model_id TEXT NOT NULL,provider_id TEXT NOT NULL,attempt INTEGER NOT NULL,status TEXT NOT NULL,error TEXT,started_at TEXT NOT NULL,completed_at TEXT);
+CREATE TABLE IF NOT EXISTS writer_proposals (
+ id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+ model_run_id TEXT NOT NULL UNIQUE REFERENCES model_runs(id) ON DELETE CASCADE,
+ document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+ base_revision INTEGER NOT NULL, base_html_hash TEXT NOT NULL, source_hash TEXT NOT NULL,
+ source_snapshot_json TEXT NOT NULL, instruction TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, changes_json TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','applied','dismissed','superseded')),
+ applied_revision INTEGER, applied_change_ids_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, applied_at TEXT);
 CREATE TABLE IF NOT EXISTS citations (id TEXT PRIMARY KEY, model_run_id TEXT NOT NULL REFERENCES model_runs(id) ON DELETE CASCADE, title TEXT, url TEXT NOT NULL, start_offset INTEGER, end_offset INTEGER);
 CREATE TABLE IF NOT EXISTS tool_events (id TEXT PRIMARY KEY, model_run_id TEXT NOT NULL REFERENCES model_runs(id) ON DELETE CASCADE, event_type TEXT NOT NULL, tool_name TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE, kind TEXT NOT NULL, version INTEGER NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, content_json TEXT NOT NULL, source_refs_json TEXT NOT NULL, promoted INTEGER NOT NULL DEFAULT 0, basis_document_version_id TEXT, basis_revision INTEGER, basis_signal_hash TEXT, created_at TEXT NOT NULL, UNIQUE(kind, scope_type, scope_id, version));
+CREATE TABLE IF NOT EXISTS summary_reviews (
+ id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+ model_run_id TEXT NOT NULL UNIQUE REFERENCES model_runs(id) ON DELETE CASCADE,
+ document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+ artifact_version INTEGER NOT NULL, basis_revision INTEGER NOT NULL, basis_signal_hash TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+ decision TEXT CHECK(decision IS NULL OR decision IN ('KEEP','REPLACE')), result_json TEXT,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','applied','superseded','failed','cancelled')),
+ created_at TEXT NOT NULL, applied_at TEXT);
 CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, document_version_id TEXT REFERENCES document_versions(id) ON DELETE CASCADE, status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0, result_json TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS model_settings (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, label TEXT NOT NULL, protocol TEXT NOT NULL, base_url TEXT, secret_env_name TEXT NOT NULL, config_json TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(provider_id));
 CREATE TABLE IF NOT EXISTS model_definitions (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, label TEXT NOT NULL, protocol TEXT NOT NULL, context_window INTEGER NOT NULL, max_output INTEGER NOT NULL, capabilities_json TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 100, enabled INTEGER NOT NULL DEFAULT 1);

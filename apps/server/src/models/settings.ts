@@ -25,6 +25,7 @@ const defaultTaskModels:Record<TaskAction,string>={
   'polish-note':'gpt-5.6-luna',
   visualize:'gpt-5.6-sol', research:'gpt-5.6-sol', summarize:'gpt-5.6-terra', tldr:'gpt-5.6-luna',
   'half-page':'gpt-5.6-terra', 'visual-recap':'gpt-5.6-sol', compact:'gpt-5.6-luna',
+  'document-write':'gpt-5.6-sol', 'review-summary':'gpt-5.6-terra',
 };
 
 export function seedModelSettings():void {

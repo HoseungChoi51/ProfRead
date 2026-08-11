@@ -1,10 +1,12 @@
 import type { ModelDefinition, ModelProfile, TaskAction } from '@afterdraft/shared';
 
 export type Action = TaskAction;
-export interface RouteInput { action: Action; input: string; hasVisual: boolean; webEnabled: boolean; estimatedTokens: number; modelOverride?: string; taskModelId?: string }
+export interface RouteInput { action: Action; input: string; hasVisual: boolean; webEnabled: boolean; estimatedTokens: number; requiresImageGeneration?: boolean; modelOverride?: string; taskModelId?: string }
 export interface RouteDecision { profile: ModelProfile['name']; model: ModelDefinition; reason: string; eligible: ModelDefinition[] }
 
 export function deterministicProfile(input: RouteInput): ModelProfile['name'] | null {
+  if (input.action === 'document-write') return 'deep';
+  if (input.action === 'review-summary') return 'digest';
   if (input.action === 'research' || input.webEnabled) return 'research';
   if (input.action === 'visualize' || input.action === 'visual-recap') return 'digest';
   if (input.action === 'polish-note') return 'quick';
@@ -19,7 +21,8 @@ export function deterministicProfile(input: RouteInput): ModelProfile['name'] | 
 
 function capable(model: ModelDefinition, input: RouteInput): boolean {
   const c=model.capabilities;
-  return model.enabled && c.text && c.streaming && (!input.hasVisual || c.vision) && (input.action!=='visualize' || (c.structuredOutput&&c.functionTools)) && (input.action!=='visual-recap'||(c.structuredOutput&&c.imageGeneration)) && (!(input.action==='research'||input.webEnabled)||c.providerWebSearch) && model.contextWindow >= input.estimatedTokens + model.maxOutput;
+  const structuredAction=input.action==='visualize'||input.action==='document-write'||input.action==='review-summary';
+  return model.enabled && c.text && c.streaming && (!input.hasVisual || c.vision) && (!structuredAction || (c.structuredOutput&&c.functionTools)) && (input.action!=='visual-recap'||(c.structuredOutput&&c.imageGeneration)) && (!input.requiresImageGeneration||(c.imageGeneration&&model.protocol==='openai-responses')) && (!(input.action==='research'||input.webEnabled)||c.providerWebSearch) && model.contextWindow >= input.estimatedTokens + model.maxOutput;
 }
 
 export function route(input: RouteInput, models: ModelDefinition[], profiles: ModelProfile[], ttft: Record<string,number> = {}, classifiedProfile?: 'quick'|'standard'|'deep'): RouteDecision {
@@ -32,6 +35,8 @@ export function route(input: RouteInput, models: ModelDefinition[], profiles: Mo
 }
 
 export function toolsFor(input: Pick<RouteInput,'action'|'webEnabled'>): string[] {
+  if(input.action==='document-write')return ['propose_document_edits'];
+  if(input.action==='review-summary')return ['review_summary'];
   if(input.action==='visualize')return ['render_diagram'];
   if(input.action==='visual-recap')return ['image_generation'];
   if(input.action==='research'||input.webEnabled)return ['provider_web_search'];

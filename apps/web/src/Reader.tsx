@@ -10,6 +10,11 @@ import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, stream } from "./api.js";
+import {
+  WriterPanel,
+  type WriterSource,
+  type WriterWorkspace,
+} from "./WriterPanel.js";
 type DocumentInfo = {
   id: string;
   title: string;
@@ -38,7 +43,12 @@ type Thread = {
   local_start_offset?: number;
   local_end_offset?: number;
   action?: string;
+  kind?: "discussion" | "writer";
   annotation_text?: string | null;
+  annotation_candidate_text?: string | null;
+  annotation_candidate_source_message_id?: string | null;
+  annotation_candidate_status?: "pending" | "accepted" | "dismissed" | null;
+  annotation_candidate_created_at?: string | null;
   messages: Message[];
 };
 type HighlightKind = "important" | "question" | "comment";
@@ -59,6 +69,7 @@ type TaskRoute = { action: string; modelId: string };
 type Artifact = {
   id: string;
   kind: string;
+  version: number;
   content: any;
   sourceRefs: string[];
   promoted: boolean;
@@ -70,14 +81,34 @@ type Artifact = {
     status: "current" | "needs-review" | "unknown";
     reasons: string[];
   };
+  latestReview?: {
+    id: string;
+    status: "pending" | "applied" | "superseded" | "failed" | "cancelled";
+    decision: "KEEP" | "REPLACE" | null;
+    rationale: string | null;
+    sourceStatus: "adequate" | "material-gap" | "contradiction" | null;
+    modelId: string | null;
+    artifactVersion: number;
+    basis: {
+      documentVersionId: string;
+      revision: number;
+      signalHash: string;
+    };
+    createdAt: string;
+    appliedAt: string | null;
+  } | null;
 };
 export type ThreadPreviewSource =
   | "annotation"
+  | "candidate"
   | "thread-compact"
   | "answer-compact"
   | "answer";
 export type ThreadPreview = { text: string; source: ThreadPreviewSource };
-type ActiveEntry = { type: "thread" | "artifact" | "highlight"; id: string };
+type ActiveEntry = {
+  type: "thread" | "artifact" | "highlight" | "writer";
+  id: string;
+};
 type AskRetry = {
   key: string;
   threadId: string;
@@ -233,6 +264,56 @@ export function retryRequestId(
 ): string {
   return terminalFailure ? replacement() : current;
 }
+export function writerRequestIdentity(input: {
+  instruction: string;
+  modelOverride: string;
+  documentVersionId: string;
+  revision: number;
+  sources: Array<{ id: string; snapshotHash?: string }>;
+}): string {
+  return JSON.stringify([
+    input.instruction.trim(),
+    input.modelOverride,
+    input.documentVersionId,
+    input.revision,
+    input.sources
+      .map((source) => [source.id, source.snapshotHash ?? ""])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  ]);
+}
+export function summaryReviewRequestIdentity(input: {
+  artifactId: string;
+  artifactVersion: number;
+  documentVersionId: string;
+  revision: number;
+  modelOverride: string;
+  signals: Array<{
+    id: string;
+    kind: HighlightKind;
+    exactQuote: string;
+    note: string | null;
+  }>;
+}): string {
+  return JSON.stringify([
+    input.artifactId,
+    input.artifactVersion,
+    input.documentVersionId,
+    input.revision,
+    input.signals
+      .filter(
+        (signal) =>
+          signal.kind === "important" || signal.kind === "comment",
+      )
+      .map((signal) => [
+        signal.id,
+        signal.kind,
+        signal.exactQuote,
+        signal.note ?? "",
+      ])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+    input.modelOverride,
+  ]);
+}
 export function threadReplyRetryRequestId(
   retries: ReplyRetryState,
   threadId: string,
@@ -305,12 +386,22 @@ export function normalizeThreadPreview(
   if (characters.length <= limit) return normalized;
   return `${characters.slice(0, Math.max(0, limit - 1)).join("").trimEnd()}…`;
 }
+export function limitUnicodeCodePoints(value: string, maxLength: number): string {
+  return Array.from(value).slice(0, Math.max(0, maxLength)).join("");
+}
+export function threadAnnotationCandidate(thread: Thread): string {
+  if (thread.annotation_text?.trim()) return "";
+  if (thread.annotation_candidate_status !== "pending") return "";
+  return normalizeThreadPreview(thread.annotation_candidate_text, 500);
+}
 export function deriveThreadPreview(
   thread: Thread,
   artifacts: Artifact[],
 ): ThreadPreview | null {
   const annotation = normalizeThreadPreview(thread.annotation_text);
   if (annotation) return { text: annotation, source: "annotation" };
+  const candidate = threadAnnotationCandidate(thread);
+  if (candidate) return { text: candidate, source: "candidate" };
 
   const assistantIds = new Set(
     thread.messages
@@ -430,6 +521,13 @@ export function Reader({
     [threads, setThreads] = useState<Thread[]>([]),
     [highlights, setHighlights] = useState<Highlight[]>([]),
     [artifacts, setArtifacts] = useState<Artifact[]>([]),
+    [writerWorkspace, setWriterWorkspace] =
+      useState<WriterWorkspace | null>(null),
+    [writerInstruction, setWriterInstruction] = useState(""),
+    [writerModelOverride, setWriterModelOverride] = useState(""),
+    [reviewModelOverrides, setReviewModelOverrides] = useState<
+      Record<string, string>
+    >({}),
     [models, setModels] = useState<Model[]>([]),
     [taskRoutes, setTaskRoutes] = useState<TaskRoute[]>([]),
     [modelOverride, setModelOverride] = useState(""),
@@ -456,6 +554,7 @@ export function Reader({
     [highlightNote, setHighlightNote] = useState(""),
     [askRetry, setAskRetry] = useState<AskRetry | null>(null),
     [running, setRunning] = useState<string | null>(null),
+    [activeRunReady, setActiveRunReady] = useState(false),
     [routeInfo, setRouteInfo] = useState(""),
     [drawer, setDrawer] = useState(false),
     [activeEntry, setActiveEntry] = useState<ActiveEntry | null>(null),
@@ -483,6 +582,11 @@ export function Reader({
     editSaveLock = useRef(false),
     scrollRatio = useRef(0),
     replyRetries = useRef<ReplyRetryState>(new Map()),
+    writerRetry = useRef<{ key: string; requestId: string } | null>(
+      null,
+    ),
+    reviewRetries = useRef(new Map<string, string>()),
+    editHistoryRef = useRef<EditHistory | null>(null),
     popoverSidebarWidth = useRef(sidebarWidth),
     pendingEditsRef = useRef<DocumentEditOperation[]>([]),
     editFinishResolvers = useRef(new Map<string, () => void>());
@@ -516,10 +620,25 @@ export function Reader({
       }),
     [documentId],
   );
+  const loadWriter = useCallback(
+    () =>
+      api<WriterWorkspace>(`/api/documents/${documentId}/writer`).then(
+        (workspace) => {
+          setWriterWorkspace(workspace);
+          return workspace;
+        },
+      ),
+    [documentId],
+  );
   const anchorPayloads = useMemo(
     () => [
       ...threads
-        .filter((thread) => thread.anchor_id && !thread.parent_message_id)
+        .filter(
+          (thread) =>
+            thread.kind !== "writer" &&
+            thread.anchor_id &&
+            !thread.parent_message_id,
+        )
         .map((thread) => {
           const preview = deriveThreadPreview(thread, artifacts);
           return {
@@ -528,7 +647,8 @@ export function Reader({
             exact: thread.exact_quote,
             checked: false,
             action: thread.action,
-            annotationText: thread.annotation_text,
+            annotationText:
+              thread.annotation_text || threadAnnotationCandidate(thread) || null,
             preview: preview?.text,
             previewSource: preview?.source,
             localStartOffset: thread.local_start_offset,
@@ -552,10 +672,22 @@ export function Reader({
   const loadEditHistory = useCallback(
     (versionId: string) =>
       api<EditHistory>(`/api/versions/${versionId}/edit-history`).then(
-        setEditHistory,
+        (history) => {
+          editHistoryRef.current = history;
+          setEditHistory(history);
+          return history;
+        },
       ),
     [],
   );
+  useEffect(() => {
+    setWriterWorkspace(null);
+    setWriterInstruction("");
+    setWriterModelOverride("");
+    setReviewModelOverrides({});
+    writerRetry.current = null;
+    reviewRetries.current.clear();
+  }, [documentId]);
   useEffect(() => {
     api<DocumentInfo>(`/api/documents/${documentId}`)
       .then((info) => {
@@ -1175,6 +1307,7 @@ export function Reader({
   ): Promise<RunResult> {
     const controller = new AbortController();
     aborter.current = controller;
+    setActiveRunReady(false);
     setRunning(threadId);
     if (!["tldr", "half-page", "visual-recap", "summarize"].includes(action))
       setActiveEntry({ type: "thread", id: threadId });
@@ -1202,6 +1335,7 @@ export function Reader({
         (event, data) => {
           if (event === "route") {
             activeRunId.current = data.runId ?? "";
+            setActiveRunReady(Boolean(activeRunId.current));
             setRouteInfo(
               `${data.providerId} · ${data.modelId} · ${data.contextTier} · ${data.enabledTools?.length ? data.enabledTools.join(", ") : "no tools"}`,
             );
@@ -1280,6 +1414,7 @@ export function Reader({
       };
     } finally {
       setRunning(null);
+      setActiveRunReady(false);
       aborter.current = null;
       activeRunId.current = "";
     }
@@ -1444,6 +1579,317 @@ export function Reader({
       releaseSubmission();
     }
   }
+  async function reviewArtifact(artifact: Artifact) {
+    if (!doc || !acquireSubmission()) return;
+    try {
+      if (!(await ensureSavedForAi())) return;
+      const reviewModel = reviewModelOverrides[artifact.id] ?? "";
+      const retryKey = summaryReviewRequestIdentity({
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+        documentVersionId: doc.version_id,
+        revision: editHistoryRef.current?.currentRevision ?? 0,
+        modelOverride: reviewModel,
+        signals: highlights.map((highlight) => ({
+          id: highlight.id,
+          kind: highlight.kind,
+          exactQuote: highlight.exact_quote,
+          note: highlight.note,
+        })),
+      });
+      const requestId =
+        reviewRetries.current.get(retryKey) ?? crypto.randomUUID();
+      reviewRetries.current.set(retryKey, requestId);
+      const controller = new AbortController();
+      aborter.current = controller;
+      setActiveRunReady(false);
+      setRunning(`review:${artifact.id}`);
+      setError("");
+      let completed = false;
+      let outcome:
+        | {
+            decision: "KEEP" | "REPLACE";
+            applied: boolean;
+            supersededReason?: string;
+          }
+        | undefined;
+      let terminalFailure = false;
+      try {
+        await stream(
+          "/api/runs",
+          {
+            requestId,
+            documentVersionId: doc.version_id,
+            action: "review-summary",
+            input: "",
+            artifactScopeType: "document",
+            artifactScopeId: documentId,
+            reviewArtifactId: artifact.id,
+            expectedArtifactVersion: artifact.version,
+            ...(reviewModel ? { modelOverride: reviewModel } : {}),
+          },
+          (event, data) => {
+            if (event === "route") {
+              activeRunId.current = data.runId ?? "";
+              setActiveRunReady(Boolean(activeRunId.current));
+              setRouteInfo(
+                `${data.providerId} · ${data.modelId} · reviewing summary`,
+              );
+            }
+            if (event === "fallback")
+              setRouteInfo(`Fallback: ${data.providerId} · ${data.modelId}`);
+            if (event === "image_generation")
+              setRouteInfo(`${data.modelId} · updating visual recap image…`);
+            if (event === "review_result") {
+              outcome = data;
+              setRouteInfo(
+                data.applied
+                  ? data.decision === "KEEP"
+                    ? "Review complete · current summary kept"
+                    : "Review complete · summary updated"
+                  : `Review completed without applying · ${data.supersededReason ?? "inputs changed"}`,
+              );
+            }
+            if (event === "done") completed = true;
+            if (event === "error") {
+              terminalFailure = true;
+              throw new Error(data.message || "Summary review failed");
+            }
+            if (event === "cancelled") {
+              terminalFailure = true;
+              throw new DOMException("Cancelled", "AbortError");
+            }
+          },
+          controller.signal,
+        );
+        if (!completed || !outcome)
+          throw new Error("The summary review ended before completion");
+        reviewRetries.current.delete(retryKey);
+        try {
+          await loadArtifacts();
+        } catch (refreshError) {
+          setError(
+            `Review saved, but summaries could not refresh: ${(refreshError as Error).message}`,
+          );
+        }
+      } catch (e) {
+        if (terminalFailure || controller.signal.aborted) {
+          reviewRetries.current.set(retryKey, crypto.randomUUID());
+          await loadArtifacts().catch(() => {});
+        }
+        if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      } finally {
+        setRunning(null);
+        setActiveRunReady(false);
+        aborter.current = null;
+        activeRunId.current = "";
+      }
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function ensureWriterWorkspace() {
+    const workspace = await api<WriterWorkspace>(
+      `/api/documents/${documentId}/writer`,
+      { method: "POST" },
+    );
+    setWriterWorkspace(workspace);
+    return workspace;
+  }
+  async function openWriter() {
+    setError("");
+    try {
+      const workspace = await ensureWriterWorkspace();
+      setDrawer(true);
+      setActiveEntry({ type: "writer", id: workspace.thread.id });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  async function addWriterSource(
+    sourceType: WriterSource["sourceType"],
+    sourceId: string,
+  ) {
+    if (!acquireSubmission()) return false;
+    setError("");
+    try {
+      const workspace = await ensureWriterWorkspace();
+      await api(`/api/writers/${workspace.thread.id}/sources`, {
+        method: "POST",
+        body: JSON.stringify({ sourceType, sourceId }),
+      });
+      await loadWriter();
+      setDrawer(true);
+      setActiveEntry({ type: "writer", id: workspace.thread.id });
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function removeWriterSource(sourceId: string) {
+    if (!writerWorkspace || !acquireSubmission()) return false;
+    setError("");
+    try {
+      await api(
+        `/api/writers/${writerWorkspace.thread.id}/sources/${sourceId}`,
+        { method: "DELETE" },
+      );
+      await loadWriter();
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function runWriter(instructionValue = writerInstruction) {
+    const instruction = instructionValue.trim();
+    if (!doc || !instruction || !acquireSubmission()) return false;
+    try {
+      if (!(await ensureSavedForAi())) return false;
+      const workspace = await ensureWriterWorkspace();
+      const retryKey = writerRequestIdentity({
+        instruction,
+        modelOverride: writerModelOverride,
+        documentVersionId: workspace.currentDocumentVersionId,
+        revision: workspace.currentRevision,
+        sources: workspace.sources,
+      });
+      const retry =
+        writerRetry.current?.key === retryKey
+          ? writerRetry.current
+          : { key: retryKey, requestId: crypto.randomUUID() };
+      writerRetry.current = retry;
+      const controller = new AbortController();
+      aborter.current = controller;
+      setActiveRunReady(false);
+      setRunning(`writer:${workspace.thread.id}`);
+      setDrawer(true);
+      setActiveEntry({ type: "writer", id: workspace.thread.id });
+      setError("");
+      let completed = false;
+      let receivedProposal = false;
+      let terminalFailure = false;
+      try {
+        await stream(
+          "/api/runs",
+          {
+            requestId: retry.requestId,
+            documentVersionId: workspace.currentDocumentVersionId,
+            threadId: workspace.thread.id,
+            action: "document-write",
+            input: instruction,
+            ...(writerModelOverride
+              ? { modelOverride: writerModelOverride }
+              : {}),
+          },
+          (event, data) => {
+            if (event === "route") {
+              activeRunId.current = data.runId ?? "";
+              setActiveRunReady(Boolean(activeRunId.current));
+              setRouteInfo(
+                `${data.providerId} · ${data.modelId} · Document Writer`,
+              );
+            }
+            if (event === "fallback")
+              setRouteInfo(`Fallback: ${data.providerId} · ${data.modelId}`);
+            if (event === "proposal") {
+              receivedProposal = true;
+              setRouteInfo(`Writer proposal ready · ${data.changes?.length ?? 0} changes`);
+            }
+            if (event === "done") completed = true;
+            if (event === "error") {
+              terminalFailure = true;
+              throw new Error(data.message || "Document Writer failed");
+            }
+            if (event === "cancelled") {
+              terminalFailure = true;
+              throw new DOMException("Cancelled", "AbortError");
+            }
+          },
+          controller.signal,
+        );
+        if (!completed || !receivedProposal)
+          throw new Error("The Writer response ended before a proposal arrived");
+        writerRetry.current = null;
+        try {
+          await Promise.all([loadWriter(), loadThreads()]);
+        } catch (refreshError) {
+          setError(
+            `Proposal saved, but Writer could not refresh: ${(refreshError as Error).message}`,
+          );
+        }
+        return true;
+      } catch (e) {
+        if (terminalFailure || controller.signal.aborted)
+          writerRetry.current = {
+            key: retryKey,
+            requestId: crypto.randomUUID(),
+          };
+        if ((e as Error).name !== "AbortError") setError((e as Error).message);
+        return false;
+      } finally {
+        setRunning(null);
+        setActiveRunReady(false);
+        aborter.current = null;
+        activeRunId.current = "";
+      }
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function applyWriterProposal(
+    proposalId: string,
+    changeIds: string[],
+    baseRevision: number,
+  ) {
+    if (!doc || !changeIds.length || !acquireSubmission()) return false;
+    setError("");
+    try {
+      if (!(await ensureSavedForAi())) return false;
+      await api(`/api/writer-proposals/${proposalId}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ changeIds, baseRevision }),
+      });
+      const nextDoc = await api<DocumentInfo>(`/api/documents/${documentId}`);
+      setDoc(nextDoc);
+      await Promise.all([
+        loadEditHistory(nextDoc.version_id),
+        loadThreads(),
+        loadHighlights(),
+        loadArtifacts(),
+        loadWriter(),
+      ]);
+      setContentEpoch((value) => value + 1);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      await loadWriter().catch(() => {});
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function dismissWriterProposal(proposalId: string) {
+    if (!acquireSubmission()) return false;
+    setError("");
+    try {
+      await api(`/api/writer-proposals/${proposalId}/dismiss`, {
+        method: "POST",
+      });
+      await loadWriter();
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
   async function replyToThread(thread: Thread, text: string) {
     const prompt = text.trim();
     if (!prompt || !acquireSubmission()) return false;
@@ -1519,6 +1965,24 @@ export function Reader({
         body: JSON.stringify({ text: annotationText }),
       });
       await loadThreads();
+      setThreadAnnotationDrafts((current) => {
+        const next = { ...current };
+        delete next[threadId];
+        return next;
+      });
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+  }
+  async function dismissAnnotationCandidate(threadId: string) {
+    setError("");
+    try {
+      await api(`/api/threads/${threadId}/annotation-candidate/dismiss`, {
+        method: "POST",
+      });
+      await loadThreads();
       return true;
     } catch (e) {
       setError((e as Error).message);
@@ -1537,6 +2001,7 @@ export function Reader({
     }
     const controller = new AbortController();
     aborter.current = controller;
+    setActiveRunReady(false);
     setRunning(thread.id);
     setError("");
     let polished = "";
@@ -1558,6 +2023,7 @@ export function Reader({
         (event, data) => {
           if (event === "route") {
             activeRunId.current = data.runId ?? "";
+            setActiveRunReady(Boolean(activeRunId.current));
             setRouteInfo(
               `${data.providerId} · ${data.modelId} · polishing annotation`,
             );
@@ -1585,6 +2051,7 @@ export function Reader({
       return false;
     } finally {
       setRunning(null);
+      setActiveRunReady(false);
       aborter.current = null;
       activeRunId.current = "";
       releaseSubmission();
@@ -1747,6 +2214,7 @@ export function Reader({
         loadThreads(),
         loadHighlights(),
         loadArtifacts(),
+        ...(writerWorkspace ? [loadWriter()] : []),
       ]);
       setEditMode(stayInEditMode);
       setEditContext(null);
@@ -1802,6 +2270,8 @@ export function Reader({
         loadEditHistory(doc.version_id),
         loadThreads(),
         loadHighlights(),
+        loadArtifacts(),
+        ...(writerWorkspace ? [loadWriter()] : []),
       ]);
       setHistoryOpen(false);
       setContentEpoch((value) => value + 1);
@@ -1838,6 +2308,11 @@ export function Reader({
         : undefined,
     [activeEntry, highlights],
   );
+  const activeWriter =
+    activeEntry?.type === "writer" &&
+    writerWorkspace?.thread.id === activeEntry.id
+      ? writerWorkspace
+      : undefined;
   if (!doc)
     return (
       <main className="center">
@@ -1879,15 +2354,21 @@ export function Reader({
     });
     await loadArtifacts();
   }
-  async function acceptArtifactBasis(id: string) {
+  async function acceptArtifactBasis(artifact: Artifact) {
+    if (!acquireSubmission()) return;
     setError("");
     try {
-      await api(`/api/artifacts/${id}/accept-current-basis`, {
+      await api(`/api/artifacts/${artifact.id}/accept-current-basis`, {
         method: "POST",
+        body: JSON.stringify({
+          expectedArtifactVersion: artifact.version,
+        }),
       });
       await loadArtifacts();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      releaseSubmission();
     }
   }
   async function updateHighlight(
@@ -1998,10 +2479,22 @@ export function Reader({
           </details>
           <button
             className="quiet"
+            disabled={Boolean(running)}
+            onClick={() => void openWriter()}
+          >
+            Writer
+          </button>
+          <button
+            className="quiet"
             onClick={() => setDrawer(!drawer)}
             aria-expanded={drawer}
           >
-            Entries <b>{threads.length + artifacts.length + highlights.length}</b>
+            Entries{" "}
+            <b>
+              {threads.filter((thread) => thread.kind !== "writer").length +
+                artifacts.length +
+                highlights.length}
+            </b>
           </button>
         </div>
       </header>
@@ -2275,9 +2768,28 @@ export function Reader({
             if (event.key === "End") setSidebarWidth(sidebarLimit());
           }}
         />
-        <aside className="margin" aria-label="Discussion margin">
+        <aside
+          className={`margin${activeWriter ? " writer-active" : ""}`}
+          aria-label={
+            activeWriter ? "Document Writer workspace" : "Discussion margin"
+          }
+        >
           <nav className="entry-pane" aria-label="Reader entries">
             <h2>Entries</h2>
+            <button
+              className={
+                activeEntry?.type === "writer" ? "active writer-entry" : "writer-entry"
+              }
+              disabled={Boolean(running)}
+              onClick={() => void openWriter()}
+            >
+              <span>Document Writer</span>
+              <i>
+                {writerWorkspace
+                  ? `${writerWorkspace.sources.length} sources · ${writerWorkspace.proposals.length} proposals`
+                  : "Compose the article"}
+              </i>
+            </button>
             <section>
               <h3>Artifacts</h3>
               {artifacts.length === 0 && <small>None yet</small>}
@@ -2324,6 +2836,7 @@ export function Reader({
               <h3>Discussions</h3>
               {threads.filter(
                 (thread) =>
+                  thread.kind !== "writer" &&
                   !["tldr", "half-page", "visual-recap", "summarize"].includes(
                     thread.action ?? "",
                   ),
@@ -2331,6 +2844,7 @@ export function Reader({
               {threads
                 .filter(
                   (thread) =>
+                    thread.kind !== "writer" &&
                     ![
                       "tldr",
                       "half-page",
@@ -2363,6 +2877,17 @@ export function Reader({
               <ArtifactCard
                 artifact={activeArtifact}
                 busy={Boolean(running)}
+                models={models}
+                reviewModel={reviewModelOverrides[activeArtifact.id] ?? ""}
+                onReviewModelChange={(value) =>
+                  setReviewModelOverrides((current) => ({
+                    ...current,
+                    [activeArtifact.id]: value,
+                  }))
+                }
+                onAddToWriter={() =>
+                  void addWriterSource("artifact", activeArtifact.id)
+                }
                 onPromote={() =>
                   promote(activeArtifact.id, !activeArtifact.promoted)
                 }
@@ -2385,7 +2910,16 @@ export function Reader({
                   activeArtifact.scope_type === "document" &&
                   activeArtifact.freshness &&
                   activeArtifact.freshness.status !== "current"
-                    ? () => acceptArtifactBasis(activeArtifact.id)
+                    ? () => acceptArtifactBasis(activeArtifact)
+                    : undefined
+                }
+                onReview={
+                  activeArtifact.scope_type === "document" &&
+                  ["tldr", "half-page", "visual-recap"].includes(
+                    activeArtifact.kind,
+                  ) &&
+                  activeArtifact.freshness?.status !== "current"
+                    ? () => void reviewArtifact(activeArtifact)
                     : undefined
                 }
               />
@@ -2404,6 +2938,9 @@ export function Reader({
                 }
                 onSave={updateHighlight}
                 onDelete={deleteHighlight}
+                onAddToWriter={() =>
+                  void addWriterSource("highlight", activeHighlight.id)
+                }
               />
             )}
             {activeThread && (
@@ -2431,6 +2968,7 @@ export function Reader({
                 annotationDraft={
                   threadAnnotationDrafts[activeThread.id] ??
                   activeThread.annotation_text ??
+                  threadAnnotationCandidate(activeThread) ??
                   ""
                 }
                 onAnnotationDraftChange={(value) =>
@@ -2440,19 +2978,55 @@ export function Reader({
                   }))
                 }
                 onSaveAnnotation={saveThreadAnnotation}
+                onDismissAnnotationCandidate={dismissAnnotationCandidate}
                 onPolishAnnotation={polishThreadAnnotation}
+                onAddAnnotationToWriter={() =>
+                  void addWriterSource("thread-annotation", activeThread.id)
+                }
+                onAddMessageToWriter={(messageId) =>
+                  void addWriterSource("message", messageId)
+                }
                 onCopy={copyAnswer}
               />
             )}
-            {!activeArtifact && !activeThread && !activeHighlight && (
+            {activeWriter && (
+              <WriterPanel
+                workspace={activeWriter}
+                models={models}
+                instruction={writerInstruction}
+                modelOverride={writerModelOverride}
+                busy={Boolean(running)}
+                onInstructionChange={setWriterInstruction}
+                onModelOverrideChange={setWriterModelOverride}
+                onRemoveSource={removeWriterSource}
+                onGenerate={runWriter}
+                onApply={applyWriterProposal}
+                onDismiss={dismissWriterProposal}
+                onCopy={copyAnswer}
+                onBackToEntries={() => setActiveEntry(null)}
+              />
+            )}
+            {!activeArtifact &&
+              !activeThread &&
+              !activeHighlight &&
+              !activeWriter && (
               <p className="margin-empty">
                 Choose an entry or select a passage in the article.
               </p>
-            )}
+              )}
           </section>
           {running && (
-            <button className="cancel" onClick={() => void cancelCurrentRun()}>
-              Stop response
+            <button
+              className="cancel"
+              disabled={!activeRunReady}
+              title={
+                activeRunReady
+                  ? "Cancel the active model request"
+                  : "Starting the model request…"
+              }
+              onClick={() => void cancelCurrentRun()}
+            >
+              {activeRunReady ? "Stop response" : "Starting…"}
             </button>
           )}
         </aside>
@@ -2677,7 +3251,11 @@ function artifactLabel(artifact: Artifact): string {
 }
 function threadEntryLabel(thread: Thread): string {
   const text =
-    thread.annotation_text || thread.exact_quote || thread.title || "Follow-up";
+    thread.annotation_text ||
+    threadAnnotationCandidate(thread) ||
+    thread.exact_quote ||
+    thread.title ||
+    "Follow-up";
   return `${thread.action === "define" ? "Define · " : ""}${text}`;
 }
 function editSummary(revision: EditRevision): string {
@@ -2698,15 +3276,25 @@ function editSummary(revision: EditRevision): string {
 export function ArtifactCard({
   artifact,
   busy,
+  models = [],
+  reviewModel = "",
   onPromote,
   onRegenerate,
   onAcceptCurrent,
+  onReview,
+  onReviewModelChange,
+  onAddToWriter,
 }: {
   artifact: Artifact;
   busy: boolean;
+  models?: Model[];
+  reviewModel?: string;
   onPromote: () => void;
   onRegenerate?: (() => void) | undefined;
   onAcceptCurrent?: (() => void) | undefined;
+  onReview?: (() => void) | undefined;
+  onReviewModelChange?: ((value: string) => void) | undefined;
+  onAddToWriter?: (() => void) | undefined;
 }) {
   const freshness = artifact.freshness;
   return (
@@ -2714,6 +3302,11 @@ export function ArtifactCard({
       <header>
         <b>{artifact.kind}</b>
         <span>
+          {onAddToWriter && (
+            <button disabled={busy} onClick={onAddToWriter}>
+              Add to Writer
+            </button>
+          )}
           {onAcceptCurrent && (
             <button disabled={busy} onClick={onAcceptCurrent}>Keep current</button>
           )}
@@ -2739,6 +3332,63 @@ export function ArtifactCard({
             <span>{freshness.reasons.map(freshnessReason).join(" · ")}</span>
           )}
         </div>
+      )}
+      {onReview && (
+        <div className="artifact-review-controls">
+          <label>
+            Review model
+            <select
+              value={reviewModel}
+              disabled={busy}
+              onChange={(event) => onReviewModelChange?.(event.target.value)}
+            >
+              <option value="">Automatic model</option>
+              {models.map((model) => (
+                <option
+                  key={model.id}
+                  value={model.id}
+                  disabled={model.ready === false}
+                >
+                  {model.label}
+                  {model.ready === false ? " (unavailable)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="primary" disabled={busy} onClick={onReview}>
+            Review changes
+          </button>
+        </div>
+      )}
+      {artifact.latestReview && (
+        <details className="artifact-review-history">
+          <summary>
+            Latest semantic review ·{" "}
+            {artifact.latestReview.decision ?? artifact.latestReview.status}
+            {artifact.latestReview.decision &&
+            artifact.latestReview.status !== "applied"
+              ? ` · ${artifact.latestReview.status}`
+              : ""}
+          </summary>
+          {artifact.latestReview.rationale && (
+            <p>{artifact.latestReview.rationale}</p>
+          )}
+          <small>
+            {artifact.latestReview.status !== "applied"
+              ? "This review did not change the artifact. · "
+              : ""}
+            {artifact.latestReview.sourceStatus
+              ? `Source status: ${artifact.latestReview.sourceStatus}`
+              : artifact.latestReview.status}
+          </small>
+          <small>
+            {artifact.latestReview.modelId
+              ? `Model: ${artifact.latestReview.modelId} · `
+              : ""}
+            Basis revision {artifact.latestReview.basis.revision} ·{" "}
+            {new Date(artifact.latestReview.createdAt).toLocaleString()}
+          </small>
+        </details>
       )}
       {artifact.kind === "diagram" ? (
         <DiagramView spec={artifact.content} />
@@ -2772,6 +3422,7 @@ export function HighlightCard({
   onAnchor,
   onSave,
   onDelete,
+  onAddToWriter,
 }: {
   highlight: Highlight;
   onAnchor: () => void;
@@ -2781,6 +3432,7 @@ export function HighlightCard({
     note: string | null,
   ) => Promise<boolean>;
   onDelete: (id: string) => Promise<boolean>;
+  onAddToWriter?: (() => void) | undefined;
 }) {
   const [kind, setKind] = useState<HighlightKind>(highlight.kind);
   const [note, setNote] = useState(highlight.note ?? "");
@@ -2832,6 +3484,11 @@ export function HighlightCard({
             : "Comments influence summaries as reader opinion, not source fact."}
       </small>
       <footer>
+        {onAddToWriter && (
+          <button disabled={saving || dirty} onClick={onAddToWriter}>
+            {dirty ? "Save before adding" : "Add to Writer"}
+          </button>
+        )}
         <button
           className="danger-link"
           disabled={saving}
@@ -2954,7 +3611,10 @@ export function ThreadCard({
   annotationDraft,
   onAnnotationDraftChange,
   onSaveAnnotation,
+  onDismissAnnotationCandidate,
   onPolishAnnotation,
+  onAddAnnotationToWriter,
+  onAddMessageToWriter,
   onCopy,
 }: {
   thread: Thread;
@@ -2979,17 +3639,21 @@ export function ThreadCard({
     threadId: string,
     annotationText: string | null,
   ) => Promise<boolean>;
+  onDismissAnnotationCandidate: (threadId: string) => Promise<boolean>;
   onPolishAnnotation: (
     thread: Thread,
     draft: string,
     onDelta: (value: string) => void,
   ) => Promise<boolean>;
+  onAddAnnotationToWriter: () => void;
+  onAddMessageToWriter: (messageId: string) => void;
   onCopy: (text: string) => Promise<void>;
 }) {
   const [annotationBusy, setAnnotationBusy] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [replySending, setReplySending] = useState(false);
   const savedAnnotation = thread.annotation_text ?? "";
+  const candidateAnnotation = threadAnnotationCandidate(thread);
   const annotationDirty = annotationDraft.trim() !== savedAnnotation;
   return (
     <article id={`thread-${thread.id}`} tabIndex={-1} className="thread-card">
@@ -3002,25 +3666,53 @@ export function ThreadCard({
             <b>Article annotation</b>
             <small>1–2 sentences shown with this passage</small>
           </header>
+          {candidateAnnotation && (
+            <div className="annotation-candidate" role="status">
+              <span>
+                Suggested from the latest answer. Edit and save it, or dismiss
+                the suggestion.
+              </span>
+              <button
+                className="danger-link"
+                disabled={annotationBusy || busy}
+                onClick={async () => {
+                  setAnnotationBusy(true);
+                  await onDismissAnnotationCandidate(thread.id);
+                  setAnnotationBusy(false);
+                }}
+              >
+                Dismiss suggestion
+              </button>
+            </div>
+          )}
           <textarea
             aria-label="Annotation draft"
-            maxLength={500}
+            maxLength={1000}
             placeholder="Jot keywords or a rough note, then polish it…"
             value={annotationDraft}
             disabled={annotationBusy}
             onChange={(event) =>
-              onAnnotationDraftChange(event.target.value)
+              onAnnotationDraftChange(
+                limitUnicodeCodePoints(event.target.value, 500),
+              )
             }
           />
           <footer>
+            {savedAnnotation && (
+              <button
+                disabled={annotationBusy || busy || annotationDirty}
+                onClick={onAddAnnotationToWriter}
+              >
+                {annotationDirty ? "Save before adding" : "Add to Writer"}
+              </button>
+            )}
             {savedAnnotation && (
               <button
                 className="danger-link"
                 disabled={annotationBusy || busy}
                 onClick={async () => {
                   setAnnotationBusy(true);
-                  const saved = await onSaveAnnotation(thread.id, null);
-                  if (saved) onAnnotationDraftChange("");
+                  await onSaveAnnotation(thread.id, null);
                   setAnnotationBusy(false);
                 }}
               >
@@ -3068,6 +3760,12 @@ export function ThreadCard({
           <MarkdownContent content={message.content} />
           {message.role === "assistant" && message.id !== "draft" && (
             <div className="message-actions">
+              <button
+                disabled={busy}
+                onClick={() => onAddMessageToWriter(message.id)}
+              >
+                Add to Writer
+              </button>
               <button
                 onClick={async () => {
                   try {

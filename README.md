@@ -9,10 +9,13 @@ curated annotations, and durable study artifacts.
 The application is implemented as an npm workspace with a Fastify/SQLite API,
 React/Vite reader, shared validated contracts, and a Docker deployment. It
 supports safe HTML/ZIP import, durable margin discussions, provider routing,
-curated knowledge artifacts, search, and HTML/Markdown/PDF export.
+semantic highlights, revisioned article editing, a source-grounded Document
+Writer, semantic summary review, search, and HTML/Markdown/PDF export.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for the full
 architecture, interaction contracts, milestones, and acceptance tests.
+The current feature and migration details are in the
+[v0.3.0 release notes](docs/releases/v0.3.0.md).
 
 ## Product direction
 
@@ -23,8 +26,9 @@ architecture, interaction contracts, milestones, and acceptance tests.
   with latency as the primary optimization criterion.
 - Preserve user-curated highlights and compact recursive discussions into
   TL;DRs, half-page summaries, structured visual recaps, and derived notes.
-- Keep articles immutable while persisting annotations and exports in a
-  single-owner, multi-device library.
+- Keep imported source versions immutable while tracking deliberate article
+  edits, annotations, Writer proposals, and exports in a single-owner,
+  multi-device library.
 
 ## Intended foundation
 
