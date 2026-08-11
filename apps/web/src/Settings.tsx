@@ -4,7 +4,7 @@ import {api} from './api.js';
 type Prompt={key:string;category:string;label:string;description:string;template:string;defaultTemplate:string;variables:string[];overridden:boolean;updatedAt:string|null};
 type BehaviorDefinition={key:string;label:string;description:string;min:number;max:number;step:number;unit:string};
 type Behavior={values:Record<string,number>;defaults:Record<string,number>;definitions:BehaviorDefinition[];customized:boolean;updatedAt:string|null};
-const actions=[['define','Define one word'],['explain','Explain'],['eli14','Explain for a 14-year-old'],['ask','Ask / follow-up'],['visualize','Structured diagram'],['research','Web research'],['summarize','Summarize'],['tldr','TL;DR'],['compact','Compact note'],['half-page','Half-page summary'],['visual-recap','Visual recap image']] as const;
+const actions=[['define','Define one word'],['explain','Explain'],['eli14','Explain for a 14-year-old'],['ask','Ask / follow-up'],['polish-note','Polish annotation'],['visualize','Structured diagram'],['research','Web research'],['summarize','Summarize'],['tldr','TL;DR'],['compact','Compact note'],['half-page','Half-page summary'],['visual-recap','Visual recap image']] as const;
 const taskLabels=Object.fromEntries(actions);
 
 export function SettingsPage({onClose,onLogout}:{onClose:()=>void;onLogout:()=>void}){

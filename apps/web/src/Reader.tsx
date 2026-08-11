@@ -1,8 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, stream } from "./api.js";
+import {
+  WriterPanel,
+  type WriterSource,
+  type WriterWorkspace,
+} from "./WriterPanel.js";
 type DocumentInfo = {
   id: string;
   title: string;
@@ -28,32 +40,181 @@ type Thread = {
   block_id?: string;
   exact_quote?: string;
   block_type?: string;
+  local_start_offset?: number;
+  local_end_offset?: number;
   action?: string;
+  kind?: "discussion" | "writer";
+  annotation_text?: string | null;
+  annotation_candidate_text?: string | null;
+  annotation_candidate_source_message_id?: string | null;
+  annotation_candidate_status?: "pending" | "accepted" | "dismissed" | null;
+  annotation_candidate_created_at?: string | null;
   messages: Message[];
 };
+type HighlightKind = "important" | "question" | "comment";
 type Highlight = {
   id: string;
   anchor_id: string;
   block_id: string;
   exact_quote: string;
   checked: number;
+  local_start_offset: number;
+  local_end_offset: number;
+  kind: HighlightKind;
+  color: string;
+  note: string | null;
 };
 type Model = { id: string; label: string; providerId: string; ready?: boolean };
 type TaskRoute = { action: string; modelId: string };
 type Artifact = {
   id: string;
   kind: string;
+  version: number;
   content: any;
   sourceRefs: string[];
   promoted: boolean;
   scope_type: "document" | "section" | "answer" | "thread";
   scope_id: string;
+  created_at?: string;
+  createdAt?: string;
+  freshness?: {
+    status: "current" | "needs-review" | "unknown";
+    reasons: string[];
+  };
+  latestReview?: {
+    id: string;
+    status: "pending" | "applied" | "superseded" | "failed" | "cancelled";
+    decision: "KEEP" | "REPLACE" | null;
+    rationale: string | null;
+    sourceStatus: "adequate" | "material-gap" | "contradiction" | null;
+    modelId: string | null;
+    artifactVersion: number;
+    basis: {
+      documentVersionId: string;
+      revision: number;
+      signalHash: string;
+    };
+    createdAt: string;
+    appliedAt: string | null;
+  } | null;
 };
-type ActiveEntry = { type: "thread" | "artifact"; id: string };
+export type ThreadPreviewSource =
+  | "annotation"
+  | "candidate"
+  | "thread-compact"
+  | "answer-compact"
+  | "answer";
+export type ThreadPreview = { text: string; source: ThreadPreviewSource };
+type ActiveEntry = {
+  type: "thread" | "artifact" | "highlight" | "writer";
+  id: string;
+};
+type AskRetry = {
+  key: string;
+  threadId: string;
+  anchorId: string;
+  prompt: string;
+  requestId: string;
+};
+export type ReplyRetryState = ReadonlyMap<
+  string,
+  ReadonlyMap<string, string>
+>;
+type RunResult = { completed: boolean; requestId: string };
 type Selection = AnchorSelector & {
   rect: { top: number; left: number; width: number; height: number };
   visual?: { mimeType: "image/png"; data: string };
 };
+export type SelectionRect = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+};
+type PopoverSize = { width: number; height: number };
+export type PopoverPlacement = {
+  top: number;
+  left: number;
+  side: "above" | "below" | "top-dock" | "bottom-dock";
+  mode: "overlay" | "dock";
+};
+export type PopoverRecalculationReason =
+  | "geometry"
+  | "observer"
+  | "external";
+type PositionedPopover = PopoverPlacement & { geometryKey: string };
+
+export function translateIframeRect(
+  rect: SelectionRect,
+  frame: Pick<DOMRect, "top" | "left">,
+): SelectionRect {
+  return {
+    ...rect,
+    top: frame.top + rect.top,
+    left: frame.left + rect.left,
+  };
+}
+
+export function relativeSelectionGeometryKey(
+  selection: SelectionRect,
+  frame: Pick<DOMRect, "top" | "left">,
+): string {
+  return [
+    selection.top - frame.top,
+    selection.left - frame.left,
+    selection.width,
+    selection.height,
+  ]
+    .map((value) => Math.round(value * 100) / 100)
+    .join(":");
+}
+
+export function shouldKeepPopoverPlacement(
+  currentMode: PopoverPlacement["mode"],
+  currentGeometryKey: string,
+  nextGeometryKey: string,
+  reason: PopoverRecalculationReason,
+): boolean {
+  if (reason === "external") return false;
+  if (reason === "observer")
+    return currentMode === "dock" || currentGeometryKey !== nextGeometryKey;
+  return currentMode === "dock" && currentGeometryKey === nextGeometryKey;
+}
+
+export function placeSelectionPopover(
+  selection: SelectionRect,
+  popover: PopoverSize,
+  pane: SelectionRect,
+  gap = 12,
+  inset = 8,
+): PopoverPlacement {
+  const paneRight = pane.left + pane.width;
+  const paneBottom = pane.top + pane.height;
+  const selectionBottom = selection.top + selection.height;
+  const minLeft = pane.left + inset;
+  const maxLeft = Math.max(minLeft, paneRight - inset - popover.width);
+  const left = Math.min(
+    maxLeft,
+    Math.max(
+      minLeft,
+      selection.left + selection.width / 2 - popover.width / 2,
+    ),
+  );
+  const above = selection.top - gap - popover.height;
+  const below = selectionBottom + gap;
+  const topEdge = pane.top + inset;
+
+  if (above >= topEdge)
+    return { top: above, left, side: "above", mode: "overlay" };
+  if (below + popover.height <= paneBottom - inset)
+    return { top: below, left, side: "below", mode: "overlay" };
+
+  const roomAbove = Math.max(0, selection.top - pane.top);
+  const roomBelow = Math.max(0, paneBottom - selectionBottom);
+  return roomAbove >= roomBelow
+    ? { top: 0, left: 0, side: "top-dock", mode: "dock" }
+    : { top: 0, left: 0, side: "bottom-dock", mode: "dock" };
+}
 type EditContext = {
   blockId: string;
   kind: "text" | "heading" | "visual";
@@ -87,6 +248,222 @@ const actionLabels = {
   visualize: "Visualize",
   research: "Research",
 } as const;
+type SelectionAction = keyof typeof actionLabels;
+export function availableSelectionActions(
+  editMode: boolean,
+  hasSelectedText: boolean,
+): SelectionAction[] {
+  return (Object.keys(actionLabels) as SelectionAction[]).filter(
+    (action) => action !== "highlight" || (!editMode && hasSelectedText),
+  );
+}
+export function retryRequestId(
+  current: string,
+  terminalFailure: boolean,
+  replacement: () => string = crypto.randomUUID,
+): string {
+  return terminalFailure ? replacement() : current;
+}
+export function writerRequestIdentity(input: {
+  instruction: string;
+  modelOverride: string;
+  documentVersionId: string;
+  revision: number;
+  sources: Array<{ id: string; snapshotHash?: string }>;
+}): string {
+  return JSON.stringify([
+    input.instruction.trim(),
+    input.modelOverride,
+    input.documentVersionId,
+    input.revision,
+    input.sources
+      .map((source) => [source.id, source.snapshotHash ?? ""])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  ]);
+}
+export function summaryReviewRequestIdentity(input: {
+  artifactId: string;
+  artifactVersion: number;
+  documentVersionId: string;
+  revision: number;
+  modelOverride: string;
+  signals: Array<{
+    id: string;
+    kind: HighlightKind;
+    exactQuote: string;
+    note: string | null;
+  }>;
+}): string {
+  return JSON.stringify([
+    input.artifactId,
+    input.artifactVersion,
+    input.documentVersionId,
+    input.revision,
+    input.signals
+      .filter(
+        (signal) =>
+          signal.kind === "important" || signal.kind === "comment",
+      )
+      .map((signal) => [
+        signal.id,
+        signal.kind,
+        signal.exactQuote,
+        signal.note ?? "",
+      ])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+    input.modelOverride,
+  ]);
+}
+export function threadReplyRetryRequestId(
+  retries: ReplyRetryState,
+  threadId: string,
+  prompt: string,
+): string | undefined {
+  return retries.get(threadId)?.get(prompt);
+}
+export function rememberThreadReplyRetry(
+  retries: ReplyRetryState,
+  threadId: string,
+  prompt: string,
+  requestId: string,
+): ReplyRetryState {
+  const next = new Map(retries);
+  const prompts = new Map(retries.get(threadId) ?? []);
+  prompts.set(prompt, requestId);
+  next.set(threadId, prompts);
+  return next;
+}
+export function clearThreadReplyRetry(
+  retries: ReplyRetryState,
+  threadId: string,
+  prompt: string,
+): ReplyRetryState {
+  const current = retries.get(threadId);
+  if (!current?.has(prompt)) return retries;
+  const next = new Map(retries);
+  const prompts = new Map(current);
+  prompts.delete(prompt);
+  if (prompts.size) next.set(threadId, prompts);
+  else next.delete(threadId);
+  return next;
+}
+export function shouldSubmitComposerKey(
+  event: Pick<
+    KeyboardEvent,
+    "key" | "isComposing" | "metaKey" | "ctrlKey"
+  >,
+  requireModifier = false,
+): boolean {
+  return (
+    event.key === "Enter" &&
+    !event.isComposing &&
+    (!requireModifier || event.metaKey || event.ctrlKey)
+  );
+}
+export function tryAcquireLock(lock: { current: boolean }): boolean {
+  if (lock.current) return false;
+  lock.current = true;
+  return true;
+}
+export function releaseLock(lock: { current: boolean }): void {
+  lock.current = false;
+}
+export function normalizeThreadPreview(
+  value: unknown,
+  maxLength = 240,
+): string {
+  if (typeof value !== "string") return "";
+  const normalized = value
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-+*]\s+|\d+[.)]\s+)/gm, "")
+    .replace(/[`*_~]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const characters = Array.from(normalized);
+  const limit = Math.max(1, Math.floor(maxLength));
+  if (characters.length <= limit) return normalized;
+  return `${characters.slice(0, Math.max(0, limit - 1)).join("").trimEnd()}…`;
+}
+export function limitUnicodeCodePoints(value: string, maxLength: number): string {
+  return Array.from(value).slice(0, Math.max(0, maxLength)).join("");
+}
+export function threadAnnotationCandidate(thread: Thread): string {
+  if (thread.annotation_text?.trim()) return "";
+  if (thread.annotation_candidate_status !== "pending") return "";
+  return normalizeThreadPreview(thread.annotation_candidate_text, 500);
+}
+export function deriveThreadPreview(
+  thread: Thread,
+  artifacts: Artifact[],
+): ThreadPreview | null {
+  const annotation = normalizeThreadPreview(thread.annotation_text);
+  if (annotation) return { text: annotation, source: "annotation" };
+  const candidate = threadAnnotationCandidate(thread);
+  if (candidate) return { text: candidate, source: "candidate" };
+
+  const assistantIds = new Set(
+    thread.messages
+      .filter(
+        (message) =>
+          message.role === "assistant" &&
+          message.id !== "draft" &&
+          Boolean(message.content.trim()),
+      )
+      .map((message) => message.id),
+  );
+  const compact = artifacts
+    .map((artifact, index) => ({ artifact, index }))
+    .filter(({ artifact }) => {
+      if (artifact.kind !== "compact") return false;
+      if (artifact.scope_type === "thread")
+        return artifact.scope_id === thread.id;
+      return (
+        artifact.scope_type === "answer" && assistantIds.has(artifact.scope_id)
+      );
+    })
+    .map(({ artifact, index }) => ({
+      artifact,
+      index,
+      text: normalizeThreadPreview(artifact.content),
+      created: Date.parse(artifact.created_at ?? artifact.createdAt ?? ""),
+    }))
+    .filter((candidate) => Boolean(candidate.text))
+    .sort((left, right) => {
+      const leftTime = Number.isFinite(left.created) ? left.created : 0;
+      const rightTime = Number.isFinite(right.created) ? right.created : 0;
+      return rightTime - leftTime || left.index - right.index;
+    })[0];
+  if (compact)
+    return {
+      text: compact.text,
+      source:
+        compact.artifact.scope_type === "thread"
+          ? "thread-compact"
+          : "answer-compact",
+    };
+
+  const answer = thread.messages
+    .map((message, index) => ({
+      message,
+      index,
+      created: Date.parse(message.createdAt),
+    }))
+    .filter(
+      ({ message }) =>
+        message.role === "assistant" &&
+        message.id !== "draft" &&
+        Boolean(normalizeThreadPreview(message.content)),
+    )
+    .sort((left, right) => {
+      const leftTime = Number.isFinite(left.created) ? left.created : 0;
+      const rightTime = Number.isFinite(right.created) ? right.created : 0;
+      return rightTime - leftTime || right.index - left.index;
+    })[0]?.message;
+  const text = normalizeThreadPreview(answer?.content);
+  return text ? { text, source: "answer" } : null;
+}
 const SIDEBAR_MIN = 420;
 const SIDEBAR_MAX = 960;
 const sidebarLimit = () =>
@@ -144,6 +521,13 @@ export function Reader({
     [threads, setThreads] = useState<Thread[]>([]),
     [highlights, setHighlights] = useState<Highlight[]>([]),
     [artifacts, setArtifacts] = useState<Artifact[]>([]),
+    [writerWorkspace, setWriterWorkspace] =
+      useState<WriterWorkspace | null>(null),
+    [writerInstruction, setWriterInstruction] = useState(""),
+    [writerModelOverride, setWriterModelOverride] = useState(""),
+    [reviewModelOverrides, setReviewModelOverrides] = useState<
+      Record<string, string>
+    >({}),
     [models, setModels] = useState<Model[]>([]),
     [taskRoutes, setTaskRoutes] = useState<TaskRoute[]>([]),
     [modelOverride, setModelOverride] = useState(""),
@@ -151,10 +535,26 @@ export function Reader({
       () => sessionStorage.getItem("afterdraft-repair-id") ?? "",
     ),
     [selection, setSelection] = useState<Selection | null>(null),
+    [selectionPanel, setSelectionPanel] = useState<
+      "actions" | "composing" | "highlighting"
+    >("actions"),
+    [popoverPosition, setPopoverPosition] =
+      useState<PositionedPopover | null>(null),
     [copiedSelectionKey, setCopiedSelectionKey] = useState(""),
     [error, setError] = useState(""),
     [question, setQuestion] = useState(""),
+    [threadReplyDrafts, setThreadReplyDrafts] = useState<
+      Record<string, string>
+    >({}),
+    [threadAnnotationDrafts, setThreadAnnotationDrafts] = useState<
+      Record<string, string>
+    >({}),
+    [highlightKind, setHighlightKind] =
+      useState<HighlightKind>("important"),
+    [highlightNote, setHighlightNote] = useState(""),
+    [askRetry, setAskRetry] = useState<AskRetry | null>(null),
     [running, setRunning] = useState<string | null>(null),
+    [activeRunReady, setActiveRunReady] = useState(false),
     [routeInfo, setRouteInfo] = useState(""),
     [drawer, setDrawer] = useState(false),
     [activeEntry, setActiveEntry] = useState<ActiveEntry | null>(null),
@@ -170,10 +570,24 @@ export function Reader({
       const stored = Number(localStorage.getItem("afterdraft-sidebar-width"));
       return clampSidebar(Number.isFinite(stored) && stored ? stored : 640);
     });
-  const iframe = useRef<HTMLIFrameElement>(null),
+  const paper = useRef<HTMLElement>(null),
+    iframe = useRef<HTMLIFrameElement>(null),
     toolbar = useRef<HTMLDivElement>(null),
+    questionInput = useRef<HTMLInputElement>(null),
+    highlightKindSelect = useRef<HTMLSelectElement>(null),
+    highlightNoteInput = useRef<HTMLTextAreaElement>(null),
     aborter = useRef<AbortController | null>(null),
+    activeRunId = useRef(""),
+    submissionLock = useRef(false),
+    editSaveLock = useRef(false),
     scrollRatio = useRef(0),
+    replyRetries = useRef<ReplyRetryState>(new Map()),
+    writerRetry = useRef<{ key: string; requestId: string } | null>(
+      null,
+    ),
+    reviewRetries = useRef(new Map<string, string>()),
+    editHistoryRef = useRef<EditHistory | null>(null),
+    popoverSidebarWidth = useRef(sidebarWidth),
     pendingEditsRef = useRef<DocumentEditOperation[]>([]),
     editFinishResolvers = useRef(new Map<string, () => void>());
   const loadThreads = useCallback(
@@ -206,13 +620,74 @@ export function Reader({
       }),
     [documentId],
   );
+  const loadWriter = useCallback(
+    () =>
+      api<WriterWorkspace>(`/api/documents/${documentId}/writer`).then(
+        (workspace) => {
+          setWriterWorkspace(workspace);
+          return workspace;
+        },
+      ),
+    [documentId],
+  );
+  const anchorPayloads = useMemo(
+    () => [
+      ...threads
+        .filter(
+          (thread) =>
+            thread.kind !== "writer" &&
+            thread.anchor_id &&
+            !thread.parent_message_id,
+        )
+        .map((thread) => {
+          const preview = deriveThreadPreview(thread, artifacts);
+          return {
+            id: thread.anchor_id,
+            blockId: thread.block_id,
+            exact: thread.exact_quote,
+            checked: false,
+            action: thread.action,
+            annotationText:
+              thread.annotation_text || threadAnnotationCandidate(thread) || null,
+            preview: preview?.text,
+            previewSource: preview?.source,
+            localStartOffset: thread.local_start_offset,
+            localEndOffset: thread.local_end_offset,
+          };
+        }),
+      ...highlights.map((highlight) => ({
+        id: highlight.anchor_id,
+        blockId: highlight.block_id,
+        exact: highlight.exact_quote,
+        checked: Boolean(highlight.checked),
+        kind: highlight.kind,
+        color: highlight.color,
+        note: highlight.note,
+        localStartOffset: highlight.local_start_offset,
+        localEndOffset: highlight.local_end_offset,
+      })),
+    ],
+    [threads, artifacts, highlights],
+  );
   const loadEditHistory = useCallback(
     (versionId: string) =>
       api<EditHistory>(`/api/versions/${versionId}/edit-history`).then(
-        setEditHistory,
+        (history) => {
+          editHistoryRef.current = history;
+          setEditHistory(history);
+          return history;
+        },
       ),
     [],
   );
+  useEffect(() => {
+    setWriterWorkspace(null);
+    setWriterInstruction("");
+    setWriterModelOverride("");
+    setReviewModelOverrides({});
+    writerRetry.current = null;
+    reviewRetries.current.clear();
+  }, [documentId]);
   useEffect(() => {
     api<DocumentInfo>(`/api/documents/${documentId}`)
       .then((info) => {
@@ -246,14 +721,46 @@ export function Reader({
         event.data?.source !== "afterdraft"
       )
         return;
-      if (event.data.type === "selection")
-        setSelection({ ...event.data, blockType: "text" });
+      if (event.data.type === "selection") {
+        const frame = iframe.current?.getBoundingClientRect();
+        setSelection({
+          ...event.data,
+          blockType: "text",
+          rect: frame
+            ? translateIframeRect(event.data.rect, frame)
+            : event.data.rect,
+        });
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
+        setHighlightKind("important");
+        setHighlightNote("");
+        setAskRetry(null);
+      }
+      if (event.data.type === "selection-geometry") {
+        const frame = iframe.current?.getBoundingClientRect();
+        const rect = frame
+          ? translateIframeRect(event.data.rect, frame)
+          : event.data.rect;
+        setSelection((current) =>
+          current && current.blockId === event.data.blockId
+            ? { ...current, rect }
+            : current,
+        );
+      }
       if (event.data.type === "background-click") {
         setSelection(null);
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
+        setHighlightKind("important");
+        setHighlightNote("");
+        setAskRetry(null);
         setEditContext(null);
         closeSummaryMenus();
       }
-      if (event.data.type === "block-selection")
+      if (event.data.type === "block-selection") {
+        const frame = iframe.current?.getBoundingClientRect();
         setSelection({
           blockId: event.data.blockId,
           blockType:
@@ -263,8 +770,17 @@ export function Reader({
           suffix: "",
           startOffset: 0,
           endOffset: 0,
-          rect: event.data.rect,
+          rect: frame
+            ? translateIframeRect(event.data.rect, frame)
+            : event.data.rect,
         });
+        setSelectionPanel("actions");
+          setPopoverPosition(null);
+          setQuestion("");
+          setHighlightKind("important");
+          setHighlightNote("");
+          setAskRetry(null);
+      }
       if (event.data.type === "visual-capture")
         setSelection((current) => {
           if (!current || current.blockId !== event.data.blockId)
@@ -303,28 +819,26 @@ export function Reader({
             { type: "enter-edit-mode" },
             "*",
           );
+          iframe.current?.contentWindow?.postMessage(
+            { type: "restore-progress", ratio: scrollRatio.current },
+            "*",
+          );
+          if (selection)
+            iframe.current?.contentWindow?.postMessage(
+              {
+                type: "reveal-selection",
+                blockId: selection.blockId,
+                startOffset: selection.startOffset,
+                endOffset: selection.endOffset,
+              },
+              "*",
+            );
           return;
         }
         iframe.current?.contentWindow?.postMessage(
           {
             type: "apply-anchors",
-            anchors: [
-              ...threads
-                .filter((t) => t.anchor_id)
-                .map((t) => ({
-                  id: t.anchor_id,
-                  blockId: t.block_id,
-                  exact: t.exact_quote,
-                  checked: false,
-                  action: t.action,
-                })),
-              ...highlights.map((h) => ({
-                id: h.anchor_id,
-                blockId: h.block_id,
-                exact: h.exact_quote,
-                checked: Boolean(h.checked),
-              })),
-            ],
+            anchors: anchorPayloads,
           },
           "*",
         );
@@ -336,13 +850,27 @@ export function Reader({
       if (event.data.type === "anchor-click") {
         setDrawer(true);
         setSelection(null);
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
+        setHighlightKind("important");
+        setHighlightNote("");
+        setAskRetry(null);
         const target = threads.find((t) => t.anchor_id === event.data.anchorId);
-        if (target) setActiveEntry({ type: "thread", id: target.id });
+        if (target) {
+          setActiveEntry({ type: "thread", id: target.id });
+          return;
+        }
+        const highlight = highlights.find(
+          (item) => item.anchor_id === event.data.anchorId,
+        );
+        if (highlight)
+          setActiveEntry({ type: "highlight", id: highlight.id });
       }
     };
     addEventListener("message", receive);
     return () => removeEventListener("message", receive);
-  }, [threads, highlights, doc?.offset_ratio, editMode]);
+  }, [threads, highlights, anchorPayloads, doc?.offset_ratio, editMode, selection]);
   useEffect(() => {
     localStorage.setItem("afterdraft-sidebar-width", String(sidebarWidth));
   }, [sidebarWidth]);
@@ -353,11 +881,17 @@ export function Reader({
       if (
         target instanceof Element &&
         target.closest(
-          ".selection-tools,.edit-context-menu,.summary-menu,.edit-dialog",
+          ".selection-tools,.selection-composer,.edit-context-menu,.summary-menu,.edit-dialog",
         )
       )
         return;
       setSelection(null);
+      setSelectionPanel("actions");
+      setPopoverPosition(null);
+      setQuestion("");
+      setHighlightKind("important");
+      setHighlightNote("");
+      setAskRetry(null);
       setEditContext(null);
       closeSummaryMenus();
     };
@@ -369,30 +903,15 @@ export function Reader({
     };
   }, []);
   useEffect(() => {
+    if (editMode) return;
     iframe.current?.contentWindow?.postMessage(
       {
         type: "apply-anchors",
-        anchors: [
-          ...threads
-            .filter((t) => t.anchor_id)
-            .map((t) => ({
-              id: t.anchor_id,
-              blockId: t.block_id,
-              exact: t.exact_quote,
-              checked: false,
-              action: t.action,
-            })),
-          ...highlights.map((h) => ({
-            id: h.anchor_id,
-            blockId: h.block_id,
-            exact: h.exact_quote,
-            checked: Boolean(h.checked),
-          })),
-        ],
+        anchors: anchorPayloads,
       },
       "*",
     );
-  }, [threads, highlights]);
+  }, [anchorPayloads, editMode]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       if (!pendingEditsRef.current.length) return;
@@ -402,13 +921,144 @@ export function Reader({
     return () => removeEventListener("beforeunload", warn);
   }, []);
   useEffect(() => {
-    if (selection)
-      requestAnimationFrame(() =>
+    if (!selection) return;
+    const frame = requestAnimationFrame(() => {
+      if (selectionPanel === "composing") questionInput.current?.focus();
+      else if (selectionPanel === "highlighting" && highlightKind === "comment")
+        highlightNoteInput.current?.focus();
+      else if (selectionPanel === "highlighting")
+        highlightKindSelect.current?.focus();
+      else
         toolbar.current
           ?.querySelector<HTMLElement>("button,select,input")
-          ?.focus(),
+          ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    selection?.blockId,
+    selection?.exact,
+    selectionPanel,
+    highlightKind,
+  ]);
+  const updatePopoverPosition = useCallback(
+    (reason: PopoverRecalculationReason = "geometry") => {
+      if (
+        !selection ||
+        selectionPanel !== "actions" ||
+        window.matchMedia("(max-width: 900px)").matches
+      ) {
+        setPopoverPosition(null);
+        return;
+      }
+      const element = toolbar.current;
+      const paneElement = iframe.current;
+      const paperElement = paper.current;
+      if (!element || !paneElement || !paperElement) return;
+      const paneRect = paneElement.getBoundingClientRect();
+      const paperRect = paperElement.getBoundingClientRect();
+      const measured = element.getBoundingClientRect();
+      const geometryKey = `${selection.blockId}:${selection.startOffset}:${selection.endOffset}:${relativeSelectionGeometryKey(
+        selection.rect,
+        paneRect,
+      )}`;
+      const placed = placeSelectionPopover(
+        selection.rect,
+        { width: measured.width, height: measured.height },
+        {
+          top: paneRect.top,
+          left: paneRect.left,
+          width: paneRect.width,
+          height: paneRect.height,
+        },
       );
-  }, [selection?.blockId, selection?.exact]);
+      const next: PositionedPopover =
+        placed.mode === "dock"
+          ? { ...placed, geometryKey }
+          : {
+              ...placed,
+              top: placed.top - paperRect.top,
+              left: placed.left - paperRect.left,
+              geometryKey,
+            };
+      setPopoverPosition((current) => {
+        // Docking changes the iframe height. Ignore that immediate observer
+        // feedback, but reconsider the dock after real selection movement,
+        // window resizing, or sidebar resizing.
+        if (
+          current &&
+          shouldKeepPopoverPlacement(
+            current.mode,
+            current.geometryKey,
+            geometryKey,
+            reason,
+          )
+        )
+          return current;
+        return current &&
+          current.top === next.top &&
+          current.left === next.left &&
+          current.side === next.side &&
+          current.mode === next.mode &&
+          current.geometryKey === next.geometryKey
+          ? current
+          : next;
+      });
+    },
+    [selection, selectionPanel],
+  );
+  useLayoutEffect(() => {
+    if (!selection || selectionPanel !== "actions") return;
+    const sidebarChanged = popoverSidebarWidth.current !== sidebarWidth;
+    popoverSidebarWidth.current = sidebarWidth;
+    updatePopoverPosition(sidebarChanged ? "external" : "geometry");
+    const refreshFromObserver = () => {
+      iframe.current?.contentWindow?.postMessage(
+        { type: "refresh-selection" },
+        "*",
+      );
+      updatePopoverPosition("observer");
+    };
+    const refreshFromWindow = () => {
+      iframe.current?.contentWindow?.postMessage(
+        { type: "refresh-selection" },
+        "*",
+      );
+      updatePopoverPosition("external");
+    };
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(refreshFromObserver);
+    if (toolbar.current) observer?.observe(toolbar.current);
+    if (paper.current) observer?.observe(paper.current);
+    if (iframe.current) observer?.observe(iframe.current);
+    addEventListener("resize", refreshFromWindow);
+    return () => {
+      observer?.disconnect();
+      removeEventListener("resize", refreshFromWindow);
+    };
+  }, [selection, selectionPanel, sidebarWidth, updatePopoverPosition]);
+  useEffect(() => {
+    if (popoverPosition?.mode !== "dock" || !selection) return;
+    const frame = requestAnimationFrame(() => revealStoredSelection());
+    return () => cancelAnimationFrame(frame);
+  }, [
+    popoverPosition?.mode,
+    popoverPosition?.side,
+    selection?.blockId,
+    selection?.startOffset,
+    selection?.endOffset,
+  ]);
+  useEffect(() => {
+    if (!selection) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeSelectionPanel();
+    };
+    addEventListener("keydown", escape);
+    return () => removeEventListener("keydown", escape);
+  }, [selection]);
   useEffect(() => {
     const save = () =>
       api(`/api/documents/${documentId}/progress`, {
@@ -424,6 +1074,55 @@ export function Reader({
       save();
     };
   }, [documentId]);
+  function closeSelectionPanel() {
+    iframe.current?.contentWindow?.postMessage(
+      { type: "clear-stored-selection" },
+      "*",
+    );
+    setSelection(null);
+    setSelectionPanel("actions");
+    setPopoverPosition(null);
+    setQuestion("");
+    setHighlightKind("important");
+    setHighlightNote("");
+    setAskRetry(null);
+  }
+  function acquireSubmission(): boolean {
+    if (running || submissionLock.current) return false;
+    submissionLock.current = true;
+    return true;
+  }
+  function releaseSubmission(): void {
+    submissionLock.current = false;
+  }
+  function revealStoredSelection() {
+    if (!selection) return;
+    iframe.current?.contentWindow?.postMessage(
+      {
+        type: "reveal-selection",
+        blockId: selection.blockId,
+        startOffset: selection.startOffset,
+        endOffset: selection.endOffset,
+      },
+      "*",
+    );
+  }
+  function openAskComposer() {
+    setSelectionPanel("composing");
+    setPopoverPosition(null);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(revealStoredSelection),
+    );
+  }
+  function openHighlightComposer() {
+    setSelectionPanel("highlighting");
+    setPopoverPosition(null);
+    setHighlightKind("important");
+    setHighlightNote("");
+    requestAnimationFrame(() =>
+      requestAnimationFrame(revealStoredSelection),
+    );
+  }
   const createAnchor = async () => {
     if (!selection || !doc) throw new Error("Select something first");
     return api<{ id: string }>("/api/anchors", {
@@ -454,8 +1153,38 @@ export function Reader({
       setError((e as Error).message);
     }
   }
+  async function createHighlight() {
+    if (!selection?.exact || !doc || running) return;
+    const note = highlightNote.trim();
+    if (highlightKind === "comment" && !note) {
+      setError("Add a comment before saving this highlight");
+      highlightNoteInput.current?.focus();
+      return;
+    }
+    if (!acquireSubmission()) return;
+    setError("");
+    try {
+      const anchor = await createAnchor();
+      const highlight = await api<{ id: string }>("/api/highlights", {
+        method: "POST",
+        body: JSON.stringify({
+          anchorId: anchor.id,
+          kind: highlightKind,
+          note: note || null,
+        }),
+      });
+      await Promise.all([loadHighlights(), loadArtifacts()]);
+      setDrawer(true);
+      setActiveEntry({ type: "highlight", id: highlight.id });
+      closeSelectionPanel();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      releaseSubmission();
+    }
+  }
   async function act(action: keyof typeof actionLabels) {
-    if (!selection || !doc) return;
+    if (!selection || !doc || !acquireSubmission()) return;
     setError("");
     try {
       if (action === "define") {
@@ -468,24 +1197,53 @@ export function Reader({
         if (existing) {
           setDrawer(true);
           setActiveEntry({ type: "thread", id: existing.id });
-          setSelection(null);
+          closeSelectionPanel();
           return;
         }
       }
-      const anchor = await createAnchor();
       if (action === "highlight") {
-        await api("/api/highlights", {
-          method: "POST",
-          body: JSON.stringify({ anchorId: anchor.id, checked: true }),
-        });
-        await loadHighlights();
-        setSelection(null);
+        openHighlightComposer();
         return;
       }
+      if (!(await ensureSavedForAi())) return;
       const prompt =
         action === "ask"
           ? question.trim() || selection.exact
           : actionLabels[action];
+      const selectionKey = `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`;
+      if (action === "ask" && askRetry?.key === selectionKey) {
+        let requestId = askRetry.requestId;
+        if (askRetry.prompt !== prompt) {
+          await api(`/api/threads/${askRetry.threadId}/messages`, {
+            method: "POST",
+            body: JSON.stringify({ role: "user", content: prompt }),
+          });
+          requestId = crypto.randomUUID();
+          setAskRetry({ ...askRetry, prompt, requestId });
+        }
+        setDrawer(true);
+        setActiveEntry({ type: "thread", id: askRetry.threadId });
+        const completed = await run(
+          askRetry.threadId,
+          askRetry.anchorId,
+          action,
+          prompt,
+          selection.blockType !== "text",
+          selection.visual,
+          "section",
+          askRetry.anchorId,
+          requestId,
+        );
+        if (completed.completed) closeSelectionPanel();
+        else
+          setAskRetry({
+            ...askRetry,
+            prompt,
+            requestId: completed.requestId,
+          });
+        return;
+      }
+      const anchor = await createAnchor();
       const thread = await api<{ id: string }>("/api/threads", {
         method: "POST",
         body: JSON.stringify({
@@ -500,8 +1258,17 @@ export function Reader({
       });
       setDrawer(true);
       setActiveEntry({ type: "thread", id: thread.id });
-      setSelection(null);
-      await run(
+      const requestId = crypto.randomUUID();
+      if (action === "ask")
+        setAskRetry({
+          key: selectionKey,
+          threadId: thread.id,
+          anchorId: anchor.id,
+          prompt,
+          requestId,
+        });
+      else closeSelectionPanel();
+      const completed = await run(
         thread.id,
         anchor.id,
         action,
@@ -510,9 +1277,21 @@ export function Reader({
         selection.visual,
         "section",
         anchor.id,
+        requestId,
       );
+      if (action === "ask" && completed.completed) closeSelectionPanel();
+      else if (action === "ask")
+        setAskRetry({
+          key: selectionKey,
+          threadId: thread.id,
+          anchorId: anchor.id,
+          prompt,
+          requestId: completed.requestId,
+        });
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      releaseSubmission();
     }
   }
   async function run(
@@ -524,18 +1303,23 @@ export function Reader({
     visual?: { mimeType: "image/png"; data: string },
     artifactScopeType?: "document" | "section" | "answer" | "thread",
     artifactScopeId?: string,
-  ) {
+    requestId: string = crypto.randomUUID(),
+  ): Promise<RunResult> {
     const controller = new AbortController();
     aborter.current = controller;
+    setActiveRunReady(false);
     setRunning(threadId);
     if (!["tldr", "half-page", "visual-recap", "summarize"].includes(action))
       setActiveEntry({ type: "thread", id: threadId });
-    await loadThreads();
+    let completed = false;
+    let streamFailure = "";
+    let streamCancelled = false;
     try {
+      await loadThreads();
       await stream(
         "/api/runs",
         {
-          requestId: crypto.randomUUID(),
+          requestId,
           documentVersionId: doc!.version_id,
           threadId,
           anchorId,
@@ -549,16 +1333,23 @@ export function Reader({
           ...(modelOverride ? { modelOverride } : {}),
         },
         (event, data) => {
-          if (event === "route")
+          if (event === "route") {
+            activeRunId.current = data.runId ?? "";
+            setActiveRunReady(Boolean(activeRunId.current));
             setRouteInfo(
-              `${data.providerId} · ${data.modelId} · ${data.contextTier} · ${data.enabledTools.length ? data.enabledTools.join(", ") : "no tools"}`,
+              `${data.providerId} · ${data.modelId} · ${data.contextTier} · ${data.enabledTools?.length ? data.enabledTools.join(", ") : "no tools"}`,
             );
+          }
           if (event === "fallback")
             setRouteInfo(`Fallback: ${data.providerId} · ${data.modelId}`);
           if (event === "image_generation")
             setRouteInfo(`${data.modelId} · generating visual recap image…`);
           if (event === "image_generated")
             setRouteInfo(`${data.modelId} · visual recap image ready`);
+          if (event === "done") completed = true;
+          if (event === "error")
+            streamFailure = data.message || "The model request failed";
+          if (event === "cancelled") streamCancelled = true;
           if (event === "text_delta" && action !== "visual-recap")
             setThreads((current) =>
               current.map((t) =>
@@ -570,10 +1361,20 @@ export function Reader({
         },
         controller.signal,
       );
-      const [, loadedArtifacts] = await Promise.all([
-        loadThreads(),
-        loadArtifacts(),
-      ]);
+      if (streamCancelled)
+        throw new DOMException("Cancelled", "AbortError");
+      if (streamFailure) throw new Error(streamFailure);
+      if (!completed) throw new Error("The response ended before completion");
+      let loadedArtifacts: Artifact[];
+      try {
+        const loaded = await Promise.all([loadThreads(), loadArtifacts()]);
+        loadedArtifacts = loaded[1];
+      } catch (refreshError) {
+        setError(
+          `Response saved, but the entries could not refresh: ${(refreshError as Error).message}`,
+        );
+        return { completed: true, requestId };
+      }
       const artifactKind =
         action === "summarize" || action === "tldr"
           ? "tldr"
@@ -589,11 +1390,33 @@ export function Reader({
         );
         if (artifact) setActiveEntry({ type: "artifact", id: artifact.id });
       }
+      return { completed: true, requestId };
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      setThreads((current) =>
+        current.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                messages: thread.messages.filter(
+                  (message) => message.id !== "draft",
+                ),
+              }
+            : thread,
+        ),
+      );
+      return {
+        completed: false,
+        requestId: retryRequestId(
+          requestId,
+          Boolean(streamFailure || streamCancelled || controller.signal.aborted),
+        ),
+      };
     } finally {
       setRunning(null);
+      setActiveRunReady(false);
       aborter.current = null;
+      activeRunId.current = "";
     }
   }
   async function nestedAction(
@@ -601,7 +1424,7 @@ export function Reader({
     text: string,
     action: "ask" | "compact" | "tldr" | "half-page" | "visual-recap" = "ask",
   ) {
-    if (!doc) return;
+    if (!doc || !acquireSubmission()) return;
     try {
       if (action !== "ask") {
         const artifactKind = action === "tldr" ? "tldr" : action;
@@ -617,6 +1440,7 @@ export function Reader({
           return;
         }
       }
+      if (!(await ensureSavedForAi())) return;
       const parent = threads.find((t) =>
           t.messages.some((m) => m.id === parentMessageId),
         ),
@@ -655,6 +1479,8 @@ export function Reader({
       );
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      releaseSubmission();
     }
   }
   async function threadAction(
@@ -672,8 +1498,10 @@ export function Reader({
       setActiveEntry({ type: "artifact", id: existing.id });
       return;
     }
-    const prompt = `Create a ${action} from this thread subtree.`;
+    if (!acquireSubmission()) return;
     try {
+      if (!(await ensureSavedForAi())) return;
+      const prompt = `Create a ${action} from this thread subtree.`;
       await api(`/api/threads/${thread.id}/messages`, {
         method: "POST",
         body: JSON.stringify({ role: "user", content: prompt }),
@@ -690,13 +1518,15 @@ export function Reader({
       );
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      releaseSubmission();
     }
   }
   async function documentAction(
     action: "tldr" | "half-page" | "visual-recap",
     regenerate = false,
   ) {
-    if (!doc) return;
+    if (!doc || !acquireSubmission()) return;
     try {
       const existingArtifact = artifacts.find(
         (artifact) =>
@@ -709,6 +1539,7 @@ export function Reader({
         setActiveEntry({ type: "artifact", id: existingArtifact.id });
         return;
       }
+      if (!(await ensureSavedForAi())) return;
       const existingThread = threads.find(
         (thread) =>
           thread.action === action &&
@@ -744,20 +1575,495 @@ export function Reader({
       );
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function reviewArtifact(artifact: Artifact) {
+    if (!doc || !acquireSubmission()) return;
+    try {
+      if (!(await ensureSavedForAi())) return;
+      const reviewModel = reviewModelOverrides[artifact.id] ?? "";
+      const retryKey = summaryReviewRequestIdentity({
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+        documentVersionId: doc.version_id,
+        revision: editHistoryRef.current?.currentRevision ?? 0,
+        modelOverride: reviewModel,
+        signals: highlights.map((highlight) => ({
+          id: highlight.id,
+          kind: highlight.kind,
+          exactQuote: highlight.exact_quote,
+          note: highlight.note,
+        })),
+      });
+      const requestId =
+        reviewRetries.current.get(retryKey) ?? crypto.randomUUID();
+      reviewRetries.current.set(retryKey, requestId);
+      const controller = new AbortController();
+      aborter.current = controller;
+      setActiveRunReady(false);
+      setRunning(`review:${artifact.id}`);
+      setError("");
+      let completed = false;
+      let outcome:
+        | {
+            decision: "KEEP" | "REPLACE";
+            applied: boolean;
+            supersededReason?: string;
+          }
+        | undefined;
+      let terminalFailure = false;
+      try {
+        await stream(
+          "/api/runs",
+          {
+            requestId,
+            documentVersionId: doc.version_id,
+            action: "review-summary",
+            input: "",
+            artifactScopeType: "document",
+            artifactScopeId: documentId,
+            reviewArtifactId: artifact.id,
+            expectedArtifactVersion: artifact.version,
+            ...(reviewModel ? { modelOverride: reviewModel } : {}),
+          },
+          (event, data) => {
+            if (event === "route") {
+              activeRunId.current = data.runId ?? "";
+              setActiveRunReady(Boolean(activeRunId.current));
+              setRouteInfo(
+                `${data.providerId} · ${data.modelId} · reviewing summary`,
+              );
+            }
+            if (event === "fallback")
+              setRouteInfo(`Fallback: ${data.providerId} · ${data.modelId}`);
+            if (event === "image_generation")
+              setRouteInfo(`${data.modelId} · updating visual recap image…`);
+            if (event === "review_result") {
+              outcome = data;
+              setRouteInfo(
+                data.applied
+                  ? data.decision === "KEEP"
+                    ? "Review complete · current summary kept"
+                    : "Review complete · summary updated"
+                  : `Review completed without applying · ${data.supersededReason ?? "inputs changed"}`,
+              );
+            }
+            if (event === "done") completed = true;
+            if (event === "error") {
+              terminalFailure = true;
+              throw new Error(data.message || "Summary review failed");
+            }
+            if (event === "cancelled") {
+              terminalFailure = true;
+              throw new DOMException("Cancelled", "AbortError");
+            }
+          },
+          controller.signal,
+        );
+        if (!completed || !outcome)
+          throw new Error("The summary review ended before completion");
+        reviewRetries.current.delete(retryKey);
+        try {
+          await loadArtifacts();
+        } catch (refreshError) {
+          setError(
+            `Review saved, but summaries could not refresh: ${(refreshError as Error).message}`,
+          );
+        }
+      } catch (e) {
+        if (terminalFailure || controller.signal.aborted) {
+          reviewRetries.current.set(retryKey, crypto.randomUUID());
+          await loadArtifacts().catch(() => {});
+        }
+        if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      } finally {
+        setRunning(null);
+        setActiveRunReady(false);
+        aborter.current = null;
+        activeRunId.current = "";
+      }
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function ensureWriterWorkspace() {
+    const workspace = await api<WriterWorkspace>(
+      `/api/documents/${documentId}/writer`,
+      { method: "POST" },
+    );
+    setWriterWorkspace(workspace);
+    return workspace;
+  }
+  async function openWriter() {
+    setError("");
+    try {
+      const workspace = await ensureWriterWorkspace();
+      setDrawer(true);
+      setActiveEntry({ type: "writer", id: workspace.thread.id });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  async function addWriterSource(
+    sourceType: WriterSource["sourceType"],
+    sourceId: string,
+  ) {
+    if (!acquireSubmission()) return false;
+    setError("");
+    try {
+      const workspace = await ensureWriterWorkspace();
+      await api(`/api/writers/${workspace.thread.id}/sources`, {
+        method: "POST",
+        body: JSON.stringify({ sourceType, sourceId }),
+      });
+      await loadWriter();
+      setDrawer(true);
+      setActiveEntry({ type: "writer", id: workspace.thread.id });
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function removeWriterSource(sourceId: string) {
+    if (!writerWorkspace || !acquireSubmission()) return false;
+    setError("");
+    try {
+      await api(
+        `/api/writers/${writerWorkspace.thread.id}/sources/${sourceId}`,
+        { method: "DELETE" },
+      );
+      await loadWriter();
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function runWriter(instructionValue = writerInstruction) {
+    const instruction = instructionValue.trim();
+    if (!doc || !instruction || !acquireSubmission()) return false;
+    try {
+      if (!(await ensureSavedForAi())) return false;
+      const workspace = await ensureWriterWorkspace();
+      const retryKey = writerRequestIdentity({
+        instruction,
+        modelOverride: writerModelOverride,
+        documentVersionId: workspace.currentDocumentVersionId,
+        revision: workspace.currentRevision,
+        sources: workspace.sources,
+      });
+      const retry =
+        writerRetry.current?.key === retryKey
+          ? writerRetry.current
+          : { key: retryKey, requestId: crypto.randomUUID() };
+      writerRetry.current = retry;
+      const controller = new AbortController();
+      aborter.current = controller;
+      setActiveRunReady(false);
+      setRunning(`writer:${workspace.thread.id}`);
+      setDrawer(true);
+      setActiveEntry({ type: "writer", id: workspace.thread.id });
+      setError("");
+      let completed = false;
+      let receivedProposal = false;
+      let terminalFailure = false;
+      try {
+        await stream(
+          "/api/runs",
+          {
+            requestId: retry.requestId,
+            documentVersionId: workspace.currentDocumentVersionId,
+            threadId: workspace.thread.id,
+            action: "document-write",
+            input: instruction,
+            ...(writerModelOverride
+              ? { modelOverride: writerModelOverride }
+              : {}),
+          },
+          (event, data) => {
+            if (event === "route") {
+              activeRunId.current = data.runId ?? "";
+              setActiveRunReady(Boolean(activeRunId.current));
+              setRouteInfo(
+                `${data.providerId} · ${data.modelId} · Document Writer`,
+              );
+            }
+            if (event === "fallback")
+              setRouteInfo(`Fallback: ${data.providerId} · ${data.modelId}`);
+            if (event === "proposal") {
+              receivedProposal = true;
+              setRouteInfo(`Writer proposal ready · ${data.changes?.length ?? 0} changes`);
+            }
+            if (event === "done") completed = true;
+            if (event === "error") {
+              terminalFailure = true;
+              throw new Error(data.message || "Document Writer failed");
+            }
+            if (event === "cancelled") {
+              terminalFailure = true;
+              throw new DOMException("Cancelled", "AbortError");
+            }
+          },
+          controller.signal,
+        );
+        if (!completed || !receivedProposal)
+          throw new Error("The Writer response ended before a proposal arrived");
+        writerRetry.current = null;
+        try {
+          await Promise.all([loadWriter(), loadThreads()]);
+        } catch (refreshError) {
+          setError(
+            `Proposal saved, but Writer could not refresh: ${(refreshError as Error).message}`,
+          );
+        }
+        return true;
+      } catch (e) {
+        if (terminalFailure || controller.signal.aborted)
+          writerRetry.current = {
+            key: retryKey,
+            requestId: crypto.randomUUID(),
+          };
+        if ((e as Error).name !== "AbortError") setError((e as Error).message);
+        return false;
+      } finally {
+        setRunning(null);
+        setActiveRunReady(false);
+        aborter.current = null;
+        activeRunId.current = "";
+      }
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function applyWriterProposal(
+    proposalId: string,
+    changeIds: string[],
+    baseRevision: number,
+  ) {
+    if (!doc || !changeIds.length || !acquireSubmission()) return false;
+    setError("");
+    try {
+      if (!(await ensureSavedForAi())) return false;
+      await api(`/api/writer-proposals/${proposalId}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ changeIds, baseRevision }),
+      });
+      const nextDoc = await api<DocumentInfo>(`/api/documents/${documentId}`);
+      setDoc(nextDoc);
+      await Promise.all([
+        loadEditHistory(nextDoc.version_id),
+        loadThreads(),
+        loadHighlights(),
+        loadArtifacts(),
+        loadWriter(),
+      ]);
+      setContentEpoch((value) => value + 1);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      await loadWriter().catch(() => {});
+      return false;
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function dismissWriterProposal(proposalId: string) {
+    if (!acquireSubmission()) return false;
+    setError("");
+    try {
+      await api(`/api/writer-proposals/${proposalId}/dismiss`, {
+        method: "POST",
+      });
+      await loadWriter();
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
     }
   }
   async function replyToThread(thread: Thread, text: string) {
     const prompt = text.trim();
-    if (!prompt || running) return;
+    if (!prompt || !acquireSubmission()) return false;
     try {
-      await api(`/api/threads/${thread.id}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ role: "user", content: prompt }),
-      });
-      await run(thread.id, thread.anchor_id ?? "", "ask", prompt);
+      if (!(await ensureSavedForAi())) return false;
+      let requestId = threadReplyRetryRequestId(
+        replyRetries.current,
+        thread.id,
+        prompt,
+      );
+      if (!requestId) {
+        await api(`/api/threads/${thread.id}/messages`, {
+          method: "POST",
+          body: JSON.stringify({ role: "user", content: prompt }),
+        });
+        requestId = crypto.randomUUID();
+        replyRetries.current = rememberThreadReplyRetry(
+          replyRetries.current,
+          thread.id,
+          prompt,
+          requestId,
+        );
+      }
+      const result = await run(
+        thread.id,
+        thread.anchor_id ?? "",
+        "ask",
+        prompt,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        requestId,
+      );
+      if (result.completed)
+        replyRetries.current = clearThreadReplyRetry(
+          replyRetries.current,
+          thread.id,
+          prompt,
+        );
+      else
+        replyRetries.current = rememberThreadReplyRetry(
+          replyRetries.current,
+          thread.id,
+          prompt,
+          result.requestId,
+        );
+      return result.completed;
     } catch (e) {
       setError((e as Error).message);
+      return false;
+    } finally {
+      releaseSubmission();
     }
+  }
+  async function copyAnswer(text: string) {
+    setError("");
+    try {
+      await copyTextToClipboard(text);
+    } catch (e) {
+      setError((e as Error).message);
+      throw e;
+    }
+  }
+  async function saveThreadAnnotation(
+    threadId: string,
+    annotationText: string | null,
+  ) {
+    setError("");
+    try {
+      await api(`/api/threads/${threadId}/annotation`, {
+        method: "PATCH",
+        body: JSON.stringify({ text: annotationText }),
+      });
+      await loadThreads();
+      setThreadAnnotationDrafts((current) => {
+        const next = { ...current };
+        delete next[threadId];
+        return next;
+      });
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+  }
+  async function dismissAnnotationCandidate(threadId: string) {
+    setError("");
+    try {
+      await api(`/api/threads/${threadId}/annotation-candidate/dismiss`, {
+        method: "POST",
+      });
+      await loadThreads();
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+  }
+  async function polishThreadAnnotation(
+    thread: Thread,
+    draft: string,
+    onDelta: (value: string) => void,
+  ) {
+    if (!doc || !draft.trim() || !acquireSubmission()) return false;
+    if (!(await ensureSavedForAi())) {
+      releaseSubmission();
+      return false;
+    }
+    const controller = new AbortController();
+    aborter.current = controller;
+    setActiveRunReady(false);
+    setRunning(thread.id);
+    setError("");
+    let polished = "";
+    let completed = false;
+    let streamFailure = "";
+    let streamCancelled = false;
+    try {
+      await stream(
+        "/api/runs",
+        {
+          requestId: crypto.randomUUID(),
+          documentVersionId: doc.version_id,
+          threadId: thread.id,
+          anchorId: thread.anchor_id ?? "",
+          action: "polish-note",
+          input: draft.trim(),
+          ...(modelOverride ? { modelOverride } : {}),
+        },
+        (event, data) => {
+          if (event === "route") {
+            activeRunId.current = data.runId ?? "";
+            setActiveRunReady(Boolean(activeRunId.current));
+            setRouteInfo(
+              `${data.providerId} · ${data.modelId} · polishing annotation`,
+            );
+          }
+          if (event === "fallback")
+            setRouteInfo(`Fallback: ${data.providerId} · ${data.modelId}`);
+          if (event === "text_delta") {
+            polished += data.delta;
+            onDelta(polished);
+          }
+          if (event === "done") completed = true;
+          if (event === "error")
+            streamFailure = data.message || "Annotation polishing failed";
+          if (event === "cancelled") streamCancelled = true;
+        },
+        controller.signal,
+      );
+      if (streamCancelled)
+        throw new DOMException("Cancelled", "AbortError");
+      if (streamFailure) throw new Error(streamFailure);
+      if (!completed) throw new Error("The response ended before completion");
+      return Boolean(polished.trim());
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      return false;
+    } finally {
+      setRunning(null);
+      setActiveRunReady(false);
+      aborter.current = null;
+      activeRunId.current = "";
+      releaseSubmission();
+    }
+  }
+  async function cancelCurrentRun() {
+    const runId = activeRunId.current;
+    const cancellation = runId
+      ? api(`/api/runs/${runId}/cancel`, { method: "POST" }).catch(() => {})
+      : Promise.resolve();
+    aborter.current?.abort();
+    await cancellation;
   }
   async function repairAnchor() {
     if (!repairId || !selection) return;
@@ -774,7 +2080,7 @@ export function Reader({
       sessionStorage.removeItem("afterdraft-repair-id");
       setRepairId("");
       setSelection(null);
-      await Promise.all([loadThreads(), loadHighlights()]);
+      await Promise.all([loadThreads(), loadHighlights(), loadArtifacts()]);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -805,7 +2111,13 @@ export function Reader({
   }
   useEffect(() => {
     if (selection && doc) void preview("ask");
-  }, [selection, doc?.version_id, modelOverride]);
+  }, [
+    selection?.blockId,
+    selection?.exact,
+    selection?.blockType,
+    doc?.version_id,
+    modelOverride,
+  ]);
   function queueEdit(operation: DocumentEditOperation) {
     const next = [...pendingEditsRef.current, operation];
     pendingEditsRef.current = next;
@@ -840,7 +2152,7 @@ export function Reader({
       pendingEditsRef.current = [];
       setPendingEdits([]);
       setSelection(null);
-      setDrawer(false);
+      if (window.matchMedia("(min-width: 901px)").matches) setDrawer(true);
       setEditMode(true);
       iframe.current?.contentWindow?.postMessage(
         { type: "enter-edit-mode" },
@@ -864,16 +2176,24 @@ export function Reader({
     setEditMode(false);
     setContentEpoch((value) => value + 1);
   }
-  async function saveEditSession() {
-    if (!doc || savingEdits) return;
-    await finishInlineEditing();
-    const operations = pendingEditsRef.current;
-    if (!operations.length) {
-      leaveEditMode(true);
-      return;
-    }
+  async function persistEditSession(
+    stayInEditMode: boolean,
+    finishEditing = true,
+  ): Promise<boolean> {
+    if (!doc || !tryAcquireLock(editSaveLock)) return false;
     setSavingEdits(true);
     try {
+      if (finishEditing) await finishInlineEditing();
+      const operations = pendingEditsRef.current;
+      if (!operations.length) {
+        if (!stayInEditMode) leaveEditMode(true);
+        return true;
+      }
+      iframe.current?.contentWindow?.postMessage(
+        { type: "exit-edit-mode" },
+        "*",
+      );
+      setError("");
       const saved = await api<{ revision: number; title: string }>(
         `/api/versions/${doc.version_id}/edits`,
         {
@@ -889,15 +2209,39 @@ export function Reader({
       setDoc((current) =>
         current ? { ...current, title: saved.title } : current,
       );
-      await loadEditHistory(doc.version_id);
-      setEditMode(false);
+      await Promise.all([
+        loadEditHistory(doc.version_id),
+        loadThreads(),
+        loadHighlights(),
+        loadArtifacts(),
+        ...(writerWorkspace ? [loadWriter()] : []),
+      ]);
+      setEditMode(stayInEditMode);
       setEditContext(null);
       setContentEpoch((value) => value + 1);
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      iframe.current?.contentWindow?.postMessage(
+        { type: "enter-edit-mode" },
+        "*",
+      );
+      return false;
     } finally {
+      releaseLock(editSaveLock);
       setSavingEdits(false);
     }
+  }
+  async function saveEditSession() {
+    await persistEditSession(false);
+  }
+  async function ensureSavedForAi(): Promise<boolean> {
+    if (!editMode) return true;
+    await finishInlineEditing();
+    if (!pendingEditsRef.current.length) return true;
+    if (!confirm("Save current edits before sending this AI request?"))
+      return false;
+    return persistEditSession(true, false);
   }
   async function restoreRevision(revision: number) {
     if (!doc || !editHistory) return;
@@ -926,6 +2270,8 @@ export function Reader({
         loadEditHistory(doc.version_id),
         loadThreads(),
         loadHighlights(),
+        loadArtifacts(),
+        ...(writerWorkspace ? [loadWriter()] : []),
       ]);
       setHistoryOpen(false);
       setContentEpoch((value) => value + 1);
@@ -955,6 +2301,18 @@ export function Reader({
         : undefined,
     [activeEntry, artifacts],
   );
+  const activeHighlight = useMemo(
+    () =>
+      activeEntry?.type === "highlight"
+        ? highlights.find((highlight) => highlight.id === activeEntry.id)
+        : undefined,
+    [activeEntry, highlights],
+  );
+  const activeWriter =
+    activeEntry?.type === "writer" &&
+    writerWorkspace?.thread.id === activeEntry.id
+      ? writerWorkspace
+      : undefined;
   if (!doc)
     return (
       <main className="center">
@@ -996,6 +2354,54 @@ export function Reader({
     });
     await loadArtifacts();
   }
+  async function acceptArtifactBasis(artifact: Artifact) {
+    if (!acquireSubmission()) return;
+    setError("");
+    try {
+      await api(`/api/artifacts/${artifact.id}/accept-current-basis`, {
+        method: "POST",
+        body: JSON.stringify({
+          expectedArtifactVersion: artifact.version,
+        }),
+      });
+      await loadArtifacts();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      releaseSubmission();
+    }
+  }
+  async function updateHighlight(
+    id: string,
+    kind: HighlightKind,
+    note: string | null,
+  ) {
+    setError("");
+    try {
+      await api(`/api/highlights/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ kind, note }),
+      });
+      await Promise.all([loadHighlights(), loadArtifacts()]);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+  }
+  async function deleteHighlight(id: string) {
+    if (!confirm("Remove this highlight?")) return false;
+    setError("");
+    try {
+      await api(`/api/highlights/${id}`, { method: "DELETE" });
+      setActiveEntry(null);
+      await Promise.all([loadHighlights(), loadArtifacts()]);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+  }
   function resizeSidebar(event: React.PointerEvent<HTMLDivElement>) {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
@@ -1023,9 +2429,18 @@ export function Reader({
         </div>
         <div className="reader-actions">
           {!editMode && (
+            <button
+              className="quiet mobile-edit-button"
+              disabled={Boolean(running)}
+              onClick={() => void enterEditMode()}
+            >
+              Edit
+            </button>
+          )}
+          {!editMode && (
             <details className="summary-menu">
               <summary>Edit</summary>
-              <button onClick={() => void enterEditMode()}>
+              <button disabled={Boolean(running)} onClick={() => void enterEditMode()}>
                 Edit document
               </button>
               <button
@@ -1045,11 +2460,11 @@ export function Reader({
           )}
           <details className="summary-menu">
             <summary>Summaries</summary>
-            <button onClick={() => documentAction("tldr")}>TL;DR</button>
-            <button onClick={() => documentAction("half-page")}>
+            <button disabled={Boolean(running)} onClick={() => documentAction("tldr")}>TL;DR</button>
+            <button disabled={Boolean(running)} onClick={() => documentAction("half-page")}>
               Half-page
             </button>
-            <button onClick={() => documentAction("visual-recap")}>
+            <button disabled={Boolean(running)} onClick={() => documentAction("visual-recap")}>
               Visual recap
             </button>
           </details>
@@ -1064,10 +2479,22 @@ export function Reader({
           </details>
           <button
             className="quiet"
+            disabled={Boolean(running)}
+            onClick={() => void openWriter()}
+          >
+            Writer
+          </button>
+          <button
+            className="quiet"
             onClick={() => setDrawer(!drawer)}
             aria-expanded={drawer}
           >
-            Entries <b>{threads.length + artifacts.length}</b>
+            Entries{" "}
+            <b>
+              {threads.filter((thread) => thread.kind !== "writer").length +
+                artifacts.length +
+                highlights.length}
+            </b>
           </button>
         </div>
       </header>
@@ -1100,7 +2527,16 @@ export function Reader({
         className="reader-grid"
         style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
       >
-        <section className="paper">
+        <section
+          ref={paper}
+          className={`paper${
+            selection ? ` selection-${selectionPanel}` : ""
+          }${
+            popoverPosition?.mode === "dock"
+              ? ` selection-actions-${popoverPosition.side}`
+              : ""
+          }`}
+        >
           <iframe
             key={contentEpoch}
             ref={iframe}
@@ -1108,6 +2544,201 @@ export function Reader({
             src={`/api/versions/${doc.version_id}/content`}
             sandbox="allow-scripts allow-same-origin allow-presentation"
           />
+          {selection && selectionPanel === "actions" && (
+            <div
+              ref={toolbar}
+              className="selection-tools"
+              data-positioned={popoverPosition ? "true" : "false"}
+              data-mode={popoverPosition?.mode}
+              data-side={popoverPosition?.side}
+              style={
+                popoverPosition?.mode === "overlay"
+                  ? { top: popoverPosition.top, left: popoverPosition.left }
+                  : undefined
+              }
+              role="toolbar"
+              aria-label="Selection actions"
+            >
+              {selection.exact && (
+                <button
+                  onClick={() => void copySelectionText()}
+                  aria-label="Copy selected text"
+                  aria-live="polite"
+                >
+                  {copiedSelectionKey ===
+                  `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`
+                    ? "Copied"
+                    : "Copy"}
+                </button>
+              )}
+              {repairId && (
+                <button className="repair-action" onClick={repairAnchor}>
+                  Attach annotation here
+                </button>
+              )}
+              {!repairId && (
+                <select
+                  aria-label="Model override"
+                  value={modelOverride}
+                  onChange={(event) => {
+                    setModelOverride(event.target.value);
+                    void preview("ask");
+                  }}
+                >
+                  <option value="">Automatic model</option>
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {!repairId &&
+                availableSelectionActions(
+                  editMode,
+                  Boolean(selection.exact),
+                ).map((action) => (
+                  <button
+                    key={action}
+                    onPointerEnter={() => void preview(action)}
+                    onFocus={() => void preview(action)}
+                    onClick={() => {
+                      if (action === "ask") openAskComposer();
+                      else if (action === "highlight")
+                        openHighlightComposer();
+                      else void act(action);
+                    }}
+                  >
+                    {actionLabels[action]}
+                  </button>
+                  ))}
+              <button
+                className="close"
+                onClick={closeSelectionPanel}
+                aria-label="Close selection actions"
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {selection && selectionPanel === "composing" && (
+            <div
+              className="selection-composer"
+              role="group"
+              aria-label="Ask about selected passage"
+            >
+              <span
+                className="selection-composer-context"
+                title={selection.exact || "Selected visual"}
+              >
+                {selection.exact || "Selected visual"}
+              </span>
+              <input
+                ref={questionInput}
+                aria-label="Question"
+                placeholder="Ask about this passage…"
+                value={question}
+                disabled={Boolean(running)}
+                onChange={(event) => setQuestion(event.target.value)}
+                onFocus={() => void preview("ask")}
+                onKeyDown={(event) => {
+                  if (shouldSubmitComposerKey(event.nativeEvent)) {
+                    event.preventDefault();
+                    void act("ask");
+                  }
+                }}
+              />
+              <select
+                aria-label="Model override"
+                value={modelOverride}
+                disabled={Boolean(running)}
+                onChange={(event) => {
+                  setModelOverride(event.target.value);
+                  void preview("ask");
+                }}
+              >
+                <option value="">Automatic model</option>
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="primary"
+                disabled={Boolean(running)}
+                onClick={() => void act("ask")}
+              >
+                Send
+              </button>
+              <button className="quiet" onClick={closeSelectionPanel}>
+                Close
+              </button>
+            </div>
+          )}
+          {selection && selectionPanel === "highlighting" && (
+            <div
+              className="selection-composer highlight-composer"
+              role="group"
+              aria-label="Highlight selected passage"
+            >
+              <span
+                className="selection-composer-context"
+                title={selection.exact}
+              >
+                {selection.exact}
+              </span>
+              <select
+                ref={highlightKindSelect}
+                aria-label="Highlight kind"
+                value={highlightKind}
+                onChange={(event) =>
+                  setHighlightKind(event.target.value as HighlightKind)
+                }
+              >
+                <option value="important">Important</option>
+                <option value="question">Question</option>
+                <option value="comment">Comment</option>
+              </select>
+              {highlightKind === "comment" ? (
+                <textarea
+                  ref={highlightNoteInput}
+                  aria-label="Highlight comment"
+                  placeholder="Add your comment…"
+                  maxLength={2000}
+                  value={highlightNote}
+                  onChange={(event) => setHighlightNote(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      shouldSubmitComposerKey(event.nativeEvent, true)
+                    ) {
+                      event.preventDefault();
+                      void createHighlight();
+                    }
+                  }}
+                />
+              ) : (
+                <span className="highlight-kind-help">
+                  {highlightKind === "important"
+                    ? "Prioritize this when summaries are reviewed."
+                    : "Keep this as an open question, not summary evidence."}
+                </span>
+              )}
+              <button
+                className="primary"
+                disabled={
+                  Boolean(running) ||
+                  (highlightKind === "comment" && !highlightNote.trim())
+                }
+                onClick={() => void createHighlight()}
+              >
+                Add highlight
+              </button>
+              <button className="quiet" onClick={closeSelectionPanel}>
+                Close
+              </button>
+            </div>
+          )}
         </section>
         <div
           className="reader-divider"
@@ -1137,9 +2768,28 @@ export function Reader({
             if (event.key === "End") setSidebarWidth(sidebarLimit());
           }}
         />
-        <aside className="margin" aria-label="Discussion margin">
+        <aside
+          className={`margin${activeWriter ? " writer-active" : ""}`}
+          aria-label={
+            activeWriter ? "Document Writer workspace" : "Discussion margin"
+          }
+        >
           <nav className="entry-pane" aria-label="Reader entries">
             <h2>Entries</h2>
+            <button
+              className={
+                activeEntry?.type === "writer" ? "active writer-entry" : "writer-entry"
+              }
+              disabled={Boolean(running)}
+              onClick={() => void openWriter()}
+            >
+              <span>Document Writer</span>
+              <i>
+                {writerWorkspace
+                  ? `${writerWorkspace.sources.length} sources · ${writerWorkspace.proposals.length} proposals`
+                  : "Compose the article"}
+              </i>
+            </button>
             <section>
               <h3>Artifacts</h3>
               {artifacts.length === 0 && <small>None yet</small>}
@@ -1162,9 +2812,31 @@ export function Reader({
               ))}
             </section>
             <section>
+              <h3>Highlights</h3>
+              {highlights.length === 0 && <small>None yet</small>}
+              {highlights.map((highlight) => (
+                <button
+                  key={highlight.id}
+                  className={
+                    activeEntry?.type === "highlight" &&
+                    activeEntry.id === highlight.id
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() =>
+                    setActiveEntry({ type: "highlight", id: highlight.id })
+                  }
+                >
+                  <span>{highlight.note || highlight.exact_quote}</span>
+                  <i>{highlight.kind}</i>
+                </button>
+              ))}
+            </section>
+            <section>
               <h3>Discussions</h3>
               {threads.filter(
                 (thread) =>
+                  thread.kind !== "writer" &&
                   !["tldr", "half-page", "visual-recap", "summarize"].includes(
                     thread.action ?? "",
                   ),
@@ -1172,6 +2844,7 @@ export function Reader({
               {threads
                 .filter(
                   (thread) =>
+                    thread.kind !== "writer" &&
                     ![
                       "tldr",
                       "half-page",
@@ -1203,6 +2876,18 @@ export function Reader({
             {activeArtifact && (
               <ArtifactCard
                 artifact={activeArtifact}
+                busy={Boolean(running)}
+                models={models}
+                reviewModel={reviewModelOverrides[activeArtifact.id] ?? ""}
+                onReviewModelChange={(value) =>
+                  setReviewModelOverrides((current) => ({
+                    ...current,
+                    [activeArtifact.id]: value,
+                  }))
+                }
+                onAddToWriter={() =>
+                  void addWriterSource("artifact", activeArtifact.id)
+                }
                 onPromote={() =>
                   promote(activeArtifact.id, !activeArtifact.promoted)
                 }
@@ -1221,12 +2906,49 @@ export function Reader({
                         )
                     : undefined
                 }
+                onAcceptCurrent={
+                  activeArtifact.scope_type === "document" &&
+                  activeArtifact.freshness &&
+                  activeArtifact.freshness.status !== "current"
+                    ? () => acceptArtifactBasis(activeArtifact)
+                    : undefined
+                }
+                onReview={
+                  activeArtifact.scope_type === "document" &&
+                  ["tldr", "half-page", "visual-recap"].includes(
+                    activeArtifact.kind,
+                  ) &&
+                  activeArtifact.freshness?.status !== "current"
+                    ? () => void reviewArtifact(activeArtifact)
+                    : undefined
+                }
+              />
+            )}
+            {activeHighlight && (
+              <HighlightCard
+                highlight={activeHighlight}
+                onAnchor={() =>
+                  iframe.current?.contentWindow?.postMessage(
+                    {
+                      type: "scroll-to-block",
+                      blockId: activeHighlight.block_id,
+                    },
+                    "*",
+                  )
+                }
+                onSave={updateHighlight}
+                onDelete={deleteHighlight}
+                onAddToWriter={() =>
+                  void addWriterSource("highlight", activeHighlight.id)
+                }
               />
             )}
             {activeThread && (
               <ThreadCard
+                key={activeThread.id}
                 thread={activeThread}
                 running={running === activeThread.id}
+                busy={Boolean(running)}
                 onAnchor={() =>
                   iframe.current?.contentWindow?.postMessage(
                     { type: "scroll-to-block", blockId: activeThread.block_id },
@@ -1236,96 +2958,79 @@ export function Reader({
                 onNestedAction={nestedAction}
                 onThreadAction={threadAction}
                 onReply={replyToThread}
+                replyDraft={threadReplyDrafts[activeThread.id] ?? ""}
+                onReplyDraftChange={(value) =>
+                  setThreadReplyDrafts((current) => ({
+                    ...current,
+                    [activeThread.id]: value,
+                  }))
+                }
+                annotationDraft={
+                  threadAnnotationDrafts[activeThread.id] ??
+                  activeThread.annotation_text ??
+                  threadAnnotationCandidate(activeThread) ??
+                  ""
+                }
+                onAnnotationDraftChange={(value) =>
+                  setThreadAnnotationDrafts((current) => ({
+                    ...current,
+                    [activeThread.id]: value,
+                  }))
+                }
+                onSaveAnnotation={saveThreadAnnotation}
+                onDismissAnnotationCandidate={dismissAnnotationCandidate}
+                onPolishAnnotation={polishThreadAnnotation}
+                onAddAnnotationToWriter={() =>
+                  void addWriterSource("thread-annotation", activeThread.id)
+                }
+                onAddMessageToWriter={(messageId) =>
+                  void addWriterSource("message", messageId)
+                }
+                onCopy={copyAnswer}
               />
             )}
-            {!activeArtifact && !activeThread && (
+            {activeWriter && (
+              <WriterPanel
+                workspace={activeWriter}
+                models={models}
+                instruction={writerInstruction}
+                modelOverride={writerModelOverride}
+                busy={Boolean(running)}
+                onInstructionChange={setWriterInstruction}
+                onModelOverrideChange={setWriterModelOverride}
+                onRemoveSource={removeWriterSource}
+                onGenerate={runWriter}
+                onApply={applyWriterProposal}
+                onDismiss={dismissWriterProposal}
+                onCopy={copyAnswer}
+                onBackToEntries={() => setActiveEntry(null)}
+              />
+            )}
+            {!activeArtifact &&
+              !activeThread &&
+              !activeHighlight &&
+              !activeWriter && (
               <p className="margin-empty">
                 Choose an entry or select a passage in the article.
               </p>
-            )}
+              )}
           </section>
           {running && (
-            <button className="cancel" onClick={() => aborter.current?.abort()}>
-              Stop response
+            <button
+              className="cancel"
+              disabled={!activeRunReady}
+              title={
+                activeRunReady
+                  ? "Cancel the active model request"
+                  : "Starting the model request…"
+              }
+              onClick={() => void cancelCurrentRun()}
+            >
+              {activeRunReady ? "Stop response" : "Starting…"}
             </button>
           )}
         </aside>
       </div>
-      {!editMode && selection && (
-        <div
-          ref={toolbar}
-          className="selection-tools"
-          style={{
-            top: Math.max(72, selection.rect.top + 92),
-            left: Math.min(innerWidth - 620, Math.max(12, selection.rect.left)),
-          }}
-          role="toolbar"
-          aria-label="Selection actions"
-        >
-          {selection.exact && (
-            <button
-              onClick={() => void copySelectionText()}
-              aria-label="Copy selected text"
-              aria-live="polite"
-            >
-              {copiedSelectionKey ===
-              `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`
-                ? "Copied"
-                : "Copy"}
-            </button>
-          )}
-          {repairId && (
-            <button className="repair-action" onClick={repairAnchor}>
-              Attach annotation here
-            </button>
-          )}
-          <select
-            aria-label="Model override"
-            value={modelOverride}
-            onChange={(e) => {
-              setModelOverride(e.target.value);
-              void preview("ask");
-            }}
-          >
-            <option value="">Automatic model</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-          {!repairId &&
-            (Object.keys(actionLabels) as Array<keyof typeof actionLabels>).map(
-              (action) => (
-                <button
-                  key={action}
-                  onPointerEnter={() => preview(action)}
-                  onFocus={() => preview(action)}
-                  onClick={() => act(action)}
-                >
-                  {actionLabels[action]}
-                </button>
-              ),
-            )}
-          <input
-            aria-label="Question"
-            placeholder="Ask about this…"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            onFocus={() => preview("ask")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !repairId) act("ask");
-            }}
-          />
-          <button
-            className="close"
-            onClick={() => setSelection(null)}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-      )}
       {editMode && editContext && (
         <div
           className="edit-context-menu"
@@ -1545,7 +3250,12 @@ function artifactLabel(artifact: Artifact): string {
   return `${names[artifact.kind] ?? artifact.kind} · ${artifact.scope_type}`;
 }
 function threadEntryLabel(thread: Thread): string {
-  const text = thread.exact_quote || thread.title || "Follow-up";
+  const text =
+    thread.annotation_text ||
+    threadAnnotationCandidate(thread) ||
+    thread.exact_quote ||
+    thread.title ||
+    "Follow-up";
   return `${thread.action === "define" ? "Define · " : ""}${text}`;
 }
 function editSummary(revision: EditRevision): string {
@@ -1557,31 +3267,129 @@ function editSummary(revision: EditRevision): string {
     "format-text": "formatting",
     "fold-section": "folding",
     "set-caption": "caption",
+    "resize-image": "image sizing",
   };
   return Object.entries(revision.summary)
     .map(([kind, count]) => `${count} ${labels[kind] ?? kind}`)
     .join(" · ");
 }
-function ArtifactCard({
+export function ArtifactCard({
   artifact,
+  busy,
+  models = [],
+  reviewModel = "",
   onPromote,
   onRegenerate,
+  onAcceptCurrent,
+  onReview,
+  onReviewModelChange,
+  onAddToWriter,
 }: {
   artifact: Artifact;
+  busy: boolean;
+  models?: Model[];
+  reviewModel?: string;
   onPromote: () => void;
   onRegenerate?: (() => void) | undefined;
+  onAcceptCurrent?: (() => void) | undefined;
+  onReview?: (() => void) | undefined;
+  onReviewModelChange?: ((value: string) => void) | undefined;
+  onAddToWriter?: (() => void) | undefined;
 }) {
+  const freshness = artifact.freshness;
   return (
     <article className="artifact-card">
       <header>
         <b>{artifact.kind}</b>
         <span>
-          {onRegenerate && <button onClick={onRegenerate}>Regenerate</button>}
+          {onAddToWriter && (
+            <button disabled={busy} onClick={onAddToWriter}>
+              Add to Writer
+            </button>
+          )}
+          {onAcceptCurrent && (
+            <button disabled={busy} onClick={onAcceptCurrent}>Keep current</button>
+          )}
+          {onRegenerate && <button disabled={busy} onClick={onRegenerate}>Regenerate</button>}
           <button onClick={onPromote}>
             {artifact.promoted ? "Unpin" : "Pin"}
           </button>
         </span>
       </header>
+      {freshness && (
+        <div
+          className={`artifact-freshness freshness-${freshness.status}`}
+          role="status"
+        >
+          <b>
+            {freshness.status === "current"
+              ? "Up to date"
+              : freshness.status === "needs-review"
+                ? "Review recommended"
+                : "Update status unknown"}
+          </b>
+          {freshness.reasons.length > 0 && (
+            <span>{freshness.reasons.map(freshnessReason).join(" · ")}</span>
+          )}
+        </div>
+      )}
+      {onReview && (
+        <div className="artifact-review-controls">
+          <label>
+            Review model
+            <select
+              value={reviewModel}
+              disabled={busy}
+              onChange={(event) => onReviewModelChange?.(event.target.value)}
+            >
+              <option value="">Automatic model</option>
+              {models.map((model) => (
+                <option
+                  key={model.id}
+                  value={model.id}
+                  disabled={model.ready === false}
+                >
+                  {model.label}
+                  {model.ready === false ? " (unavailable)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="primary" disabled={busy} onClick={onReview}>
+            Review changes
+          </button>
+        </div>
+      )}
+      {artifact.latestReview && (
+        <details className="artifact-review-history">
+          <summary>
+            Latest semantic review ·{" "}
+            {artifact.latestReview.decision ?? artifact.latestReview.status}
+            {artifact.latestReview.decision &&
+            artifact.latestReview.status !== "applied"
+              ? ` · ${artifact.latestReview.status}`
+              : ""}
+          </summary>
+          {artifact.latestReview.rationale && (
+            <p>{artifact.latestReview.rationale}</p>
+          )}
+          <small>
+            {artifact.latestReview.status !== "applied"
+              ? "This review did not change the artifact. · "
+              : ""}
+            {artifact.latestReview.sourceStatus
+              ? `Source status: ${artifact.latestReview.sourceStatus}`
+              : artifact.latestReview.status}
+          </small>
+          <small>
+            {artifact.latestReview.modelId
+              ? `Model: ${artifact.latestReview.modelId} · `
+              : ""}
+            Basis revision {artifact.latestReview.basis.revision} ·{" "}
+            {new Date(artifact.latestReview.createdAt).toLocaleString()}
+          </small>
+        </details>
+      )}
       {artifact.kind === "diagram" ? (
         <DiagramView spec={artifact.content} />
       ) : artifact.kind === "visual-recap" ? (
@@ -1596,6 +3404,110 @@ function ArtifactCard({
         />
       )}
       <small>Sources: {artifact.sourceRefs.join(", ")}</small>
+    </article>
+  );
+}
+function freshnessReason(reason: string): string {
+  const labels: Record<string, string> = {
+    "document-version-changed": "new document version",
+    "document-edits-changed": "document edited",
+    "reader-signals-changed": "important highlights or comments changed",
+    "missing-basis": "created before update tracking",
+  };
+  return labels[reason] ?? reason;
+}
+
+export function HighlightCard({
+  highlight,
+  onAnchor,
+  onSave,
+  onDelete,
+  onAddToWriter,
+}: {
+  highlight: Highlight;
+  onAnchor: () => void;
+  onSave: (
+    id: string,
+    kind: HighlightKind,
+    note: string | null,
+  ) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
+  onAddToWriter?: (() => void) | undefined;
+}) {
+  const [kind, setKind] = useState<HighlightKind>(highlight.kind);
+  const [note, setNote] = useState(highlight.note ?? "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setKind(highlight.kind);
+    setNote(highlight.note ?? "");
+  }, [highlight.id, highlight.kind, highlight.note]);
+  const invalid = kind === "comment" && !note.trim();
+  const dirty = kind !== highlight.kind || note.trim() !== (highlight.note ?? "");
+  return (
+    <article className={`highlight-card highlight-${kind}`}>
+      <header>
+        <span className="highlight-kind-dot" aria-hidden="true" />
+        <b>{kind}</b>
+      </header>
+      <button className="quote" onClick={onAnchor}>
+        {highlight.exact_quote}
+      </button>
+      <label>
+        Kind
+        <select
+          value={kind}
+          onChange={(event) => setKind(event.target.value as HighlightKind)}
+        >
+          <option value="important">Important</option>
+          <option value="question">Question</option>
+          <option value="comment">Comment</option>
+        </select>
+      </label>
+      <label>
+        {kind === "comment" ? "Comment" : "Optional note"}
+        <textarea
+          maxLength={2000}
+          value={note}
+          placeholder={
+            kind === "comment"
+              ? "Write the reader comment attached to this passage…"
+              : "Add context for yourself…"
+          }
+          onChange={(event) => setNote(event.target.value)}
+        />
+      </label>
+      <small>
+        {kind === "important"
+          ? "Summary review treats this as reader-prioritized evidence."
+          : kind === "question"
+            ? "Open questions are kept separate from summary evidence."
+            : "Comments influence summaries as reader opinion, not source fact."}
+      </small>
+      <footer>
+        {onAddToWriter && (
+          <button disabled={saving || dirty} onClick={onAddToWriter}>
+            {dirty ? "Save before adding" : "Add to Writer"}
+          </button>
+        )}
+        <button
+          className="danger-link"
+          disabled={saving}
+          onClick={() => void onDelete(highlight.id)}
+        >
+          Remove
+        </button>
+        <button
+          className="primary"
+          disabled={saving || invalid || !dirty}
+          onClick={async () => {
+            setSaving(true);
+            await onSave(highlight.id, kind, note.trim() || null);
+            setSaving(false);
+          }}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </footer>
     </article>
   );
 }
@@ -1686,16 +3598,28 @@ function VisualRecap({ recap }: { recap: any }) {
     </section>
   );
 }
-function ThreadCard({
+export function ThreadCard({
   thread,
   running,
+  busy,
   onAnchor,
   onNestedAction,
   onThreadAction,
   onReply,
+  replyDraft,
+  onReplyDraftChange,
+  annotationDraft,
+  onAnnotationDraftChange,
+  onSaveAnnotation,
+  onDismissAnnotationCandidate,
+  onPolishAnnotation,
+  onAddAnnotationToWriter,
+  onAddMessageToWriter,
+  onCopy,
 }: {
   thread: Thread;
   running: boolean;
+  busy: boolean;
   onAnchor: () => void;
   onNestedAction: (
     id: string,
@@ -1706,14 +3630,130 @@ function ThreadCard({
     thread: Thread,
     action: "compact" | "tldr" | "half-page" | "visual-recap",
   ) => void;
-  onReply: (thread: Thread, text: string) => void;
+  onReply: (thread: Thread, text: string) => Promise<boolean>;
+  replyDraft: string;
+  onReplyDraftChange: (value: string) => void;
+  annotationDraft: string;
+  onAnnotationDraftChange: (value: string) => void;
+  onSaveAnnotation: (
+    threadId: string,
+    annotationText: string | null,
+  ) => Promise<boolean>;
+  onDismissAnnotationCandidate: (threadId: string) => Promise<boolean>;
+  onPolishAnnotation: (
+    thread: Thread,
+    draft: string,
+    onDelta: (value: string) => void,
+  ) => Promise<boolean>;
+  onAddAnnotationToWriter: () => void;
+  onAddMessageToWriter: (messageId: string) => void;
+  onCopy: (text: string) => Promise<void>;
 }) {
-  const [reply, setReply] = useState("");
+  const [annotationBusy, setAnnotationBusy] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [replySending, setReplySending] = useState(false);
+  const savedAnnotation = thread.annotation_text ?? "";
+  const candidateAnnotation = threadAnnotationCandidate(thread);
+  const annotationDirty = annotationDraft.trim() !== savedAnnotation;
   return (
     <article id={`thread-${thread.id}`} tabIndex={-1} className="thread-card">
       <button className="quote" onClick={onAnchor}>
         {thread.exact_quote || thread.title || "Follow-up"}
       </button>
+      {thread.anchor_id && !thread.parent_message_id && (
+        <section className="thread-annotation" aria-label="Article annotation">
+          <header>
+            <b>Article annotation</b>
+            <small>1–2 sentences shown with this passage</small>
+          </header>
+          {candidateAnnotation && (
+            <div className="annotation-candidate" role="status">
+              <span>
+                Suggested from the latest answer. Edit and save it, or dismiss
+                the suggestion.
+              </span>
+              <button
+                className="danger-link"
+                disabled={annotationBusy || busy}
+                onClick={async () => {
+                  setAnnotationBusy(true);
+                  await onDismissAnnotationCandidate(thread.id);
+                  setAnnotationBusy(false);
+                }}
+              >
+                Dismiss suggestion
+              </button>
+            </div>
+          )}
+          <textarea
+            aria-label="Annotation draft"
+            maxLength={1000}
+            placeholder="Jot keywords or a rough note, then polish it…"
+            value={annotationDraft}
+            disabled={annotationBusy}
+            onChange={(event) =>
+              onAnnotationDraftChange(
+                limitUnicodeCodePoints(event.target.value, 500),
+              )
+            }
+          />
+          <footer>
+            {savedAnnotation && (
+              <button
+                disabled={annotationBusy || busy || annotationDirty}
+                onClick={onAddAnnotationToWriter}
+              >
+                {annotationDirty ? "Save before adding" : "Add to Writer"}
+              </button>
+            )}
+            {savedAnnotation && (
+              <button
+                className="danger-link"
+                disabled={annotationBusy || busy}
+                onClick={async () => {
+                  setAnnotationBusy(true);
+                  await onSaveAnnotation(thread.id, null);
+                  setAnnotationBusy(false);
+                }}
+              >
+                Remove
+              </button>
+            )}
+            <button
+              disabled={annotationBusy || busy || !annotationDraft.trim()}
+              onClick={async () => {
+                const original = annotationDraft;
+                setAnnotationBusy(true);
+                const polished = await onPolishAnnotation(
+                  thread,
+                  original,
+                  onAnnotationDraftChange,
+                );
+                if (!polished) onAnnotationDraftChange(original);
+                setAnnotationBusy(false);
+              }}
+            >
+              {annotationBusy ? "Polishing…" : "Polish with AI"}
+            </button>
+            <button
+              className="primary"
+              disabled={
+                annotationBusy ||
+                busy ||
+                !annotationDraft.trim() ||
+                !annotationDirty
+              }
+              onClick={async () => {
+                setAnnotationBusy(true);
+                await onSaveAnnotation(thread.id, annotationDraft.trim());
+                setAnnotationBusy(false);
+              }}
+            >
+              Save annotation
+            </button>
+          </footer>
+        </section>
+      )}
       {thread.messages.map((message) => (
         <div key={message.id} className={`message ${message.role}`}>
           <span>{message.role === "assistant" ? "AfterDraft" : "You"}</span>
@@ -1721,6 +3761,25 @@ function ThreadCard({
           {message.role === "assistant" && message.id !== "draft" && (
             <div className="message-actions">
               <button
+                disabled={busy}
+                onClick={() => onAddMessageToWriter(message.id)}
+              >
+                Add to Writer
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await onCopy(message.content);
+                    setCopiedMessageId(message.id);
+                  } catch {
+                    setCopiedMessageId("");
+                  }
+                }}
+              >
+                {copiedMessageId === message.id ? "Copied" : "Copy answer"}
+              </button>
+              <button
+                disabled={busy}
                 onClick={() =>
                   onNestedAction(message.id, message.content, "compact")
                 }
@@ -1728,6 +3787,7 @@ function ThreadCard({
                 Compact
               </button>
               <button
+                disabled={busy}
                 onClick={() =>
                   onNestedAction(message.id, message.content, "tldr")
                 }
@@ -1735,6 +3795,7 @@ function ThreadCard({
                 TL;DR
               </button>
               <button
+                disabled={busy}
                 onClick={() =>
                   onNestedAction(message.id, message.content, "visual-recap")
                 }
@@ -1747,34 +3808,52 @@ function ThreadCard({
       ))}
       <div className="thread-actions">
         <span>Thread subtree</span>
-        <button onClick={() => onThreadAction(thread, "compact")}>
+        <button
+          disabled={busy}
+          onClick={() => onThreadAction(thread, "compact")}
+        >
           Compact
         </button>
-        <button onClick={() => onThreadAction(thread, "half-page")}>
+        <button
+          disabled={busy}
+          onClick={() => onThreadAction(thread, "half-page")}
+        >
           Half-page
         </button>
-        <button onClick={() => onThreadAction(thread, "visual-recap")}>
+        <button
+          disabled={busy}
+          onClick={() => onThreadAction(thread, "visual-recap")}
+        >
           Visual recap
         </button>
       </div>
       {running && <span className="thinking">Thinking…</span>}
       <form
         className="chat-composer"
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          if (!reply.trim()) return;
-          onReply(thread, reply);
-          setReply("");
+          if (!replyDraft.trim()) return;
+          const submitted = replyDraft;
+          setReplySending(true);
+          const completed = await onReply(thread, submitted);
+          if (completed) onReplyDraftChange("");
+          setReplySending(false);
         }}
       >
         <input
           aria-label="Continue discussion"
           placeholder="Continue this discussion…"
-          value={reply}
-          onChange={(event) => setReply(event.target.value)}
-          disabled={running}
+          value={replyDraft}
+          onChange={(event) => onReplyDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && event.nativeEvent.isComposing)
+              event.preventDefault();
+          }}
+          disabled={busy || replySending}
         />
-        <button disabled={running || !reply.trim()}>Send</button>
+        <button disabled={busy || replySending || !replyDraft.trim()}>
+          {replySending ? "Sending…" : "Send"}
+        </button>
       </form>
     </article>
   );
