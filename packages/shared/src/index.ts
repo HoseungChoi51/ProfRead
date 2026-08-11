@@ -18,7 +18,7 @@ export const profileNameSchema = z.enum(['quick', 'standard', 'deep', 'vision', 
 export const modelProfileSchema = z.object({ name: profileNameSchema, modelIds: z.array(z.string()).min(1) });
 export type ModelProfile = z.infer<typeof modelProfileSchema>;
 
-export const taskActionSchema = z.enum(['define','explain','eli14','ask','visualize','research','summarize','tldr','half-page','visual-recap','compact']);
+export const taskActionSchema = z.enum(['define','explain','eli14','ask','polish-note','visualize','research','summarize','tldr','half-page','visual-recap','compact']);
 export type TaskAction = z.infer<typeof taskActionSchema>;
 export const taskModelRouteSchema = z.object({ action: taskActionSchema, modelId: z.string().min(1) });
 export type TaskModelRoute = z.infer<typeof taskModelRouteSchema>;
@@ -39,11 +39,19 @@ export const documentEditOperationSchema=z.discriminatedUnion('type',[
 ]);
 export type DocumentEditOperation=z.infer<typeof documentEditOperationSchema>;
 
+export const highlightKindSchema = z.enum(['important', 'question', 'comment']);
+export type HighlightKind = z.infer<typeof highlightKindSchema>;
+export const readerSignalSchema = z.object({
+  id: z.string(), kind: highlightKindSchema, exactQuote: z.string(), note: z.string().nullable(),
+});
+export type ReaderSignal = z.infer<typeof readerSignalSchema>;
+
 export const contextBundleSchema = z.object({
   tier: z.enum(['canonical', 'brief', 'study', 'study-with-branch-digest']),
   article: z.string(), anchor: z.string().optional(), neighboringBlock: z.string().optional(),
   branch: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string() })).default([]),
-  curatedNotes: z.array(z.string()).default([]), tokenEstimate: z.number().int().nonnegative(),
+  readerSignals: z.array(readerSignalSchema).default([]), curatedNotes: z.array(z.string()).default([]),
+  tokenEstimate: z.number().int().nonnegative(),
 });
 export type ContextBundle = z.infer<typeof contextBundleSchema>;
 

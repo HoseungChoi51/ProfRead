@@ -1,12 +1,13 @@
-import type { ModelDefinition, ModelProfile } from '@afterdraft/shared';
+import type { ModelDefinition, ModelProfile, TaskAction } from '@afterdraft/shared';
 
-export type Action = 'define'|'explain'|'eli14'|'ask'|'visualize'|'research'|'summarize'|'tldr'|'half-page'|'visual-recap'|'compact';
+export type Action = TaskAction;
 export interface RouteInput { action: Action; input: string; hasVisual: boolean; webEnabled: boolean; estimatedTokens: number; modelOverride?: string; taskModelId?: string }
 export interface RouteDecision { profile: ModelProfile['name']; model: ModelDefinition; reason: string; eligible: ModelDefinition[] }
 
 export function deterministicProfile(input: RouteInput): ModelProfile['name'] | null {
   if (input.action === 'research' || input.webEnabled) return 'research';
   if (input.action === 'visualize' || input.action === 'visual-recap') return 'digest';
+  if (input.action === 'polish-note') return 'quick';
   if (input.hasVisual) return 'vision';
   if (input.action === 'define' && input.input.trim().split(/\s+/).length <= 3) return 'quick';
   if (input.action === 'explain' || input.action === 'eli14') return 'standard';

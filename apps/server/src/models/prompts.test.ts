@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import {
+  contractForAction,
   promptTemplate,
   renderPrompt,
   requestForAction,
@@ -13,6 +14,7 @@ const app = await buildApp();
 
 afterEach(() => {
   resetPromptTemplate('contract.explain');
+  resetPromptTemplate('request.polish-note');
   resetPromptTemplate('user.envelope');
 });
 afterAll(() => app.close());
@@ -21,6 +23,13 @@ describe('prompt templates', () => {
   it('renders scoped requests and readable context variables', () => {
     expect(requestForAction('tldr', 'A useful answer', 'answer')).toBe('Create a tldr from this answer:\nA useful answer');
     expect(requestForAction('ask', 'Why does that follow?', 'answer')).toBe('Why does that follow?');
+    expect(requestForAction('polish-note', 'causal caveat; clarify scope', 'thread')).toContain('causal caveat; clarify scope');
+    expect(contractForAction('polish-note')).toContain('one or two complete sentences');
+    for (const action of ['summarize', 'tldr', 'half-page', 'visual-recap'] as const) {
+      expect(contractForAction(action)).toContain('[IMPORTANT]');
+      expect(contractForAction(action)).toContain('[READER COMMENT]');
+      expect(contractForAction(action)).toContain('[OPEN QUESTION]');
+    }
     expect(renderPrompt('user.envelope', {
       contextTier: 'study',
       articleContext: 'Article body',
@@ -41,12 +50,15 @@ describe('prompt templates', () => {
     expect(promptTemplate('contract.explain')).toBe('Use one analogy and stay under 120 words.');
     resetPromptTemplate('contract.explain');
     expect(promptTemplate('contract.explain')).toBe('');
+    savePromptTemplate('request.polish-note', 'Polish this: {{draft}}');
+    expect(requestForAction('polish-note', 'rough keywords')).toBe('Polish this: rough keywords');
   });
 
   it('rejects unknown, malformed, and missing variables', () => {
     expect(() => validatePromptTemplate('contract.explain', '{{articleContext}}')).toThrow('Unknown variable');
     expect(() => validatePromptTemplate('user.envelope', '{{articleContext}} {{action}}')).toThrow('request');
     expect(() => validatePromptTemplate('contract.explain', '{{broken')).toThrow('Malformed');
+    expect(() => validatePromptTemplate('request.polish-note', 'No draft placeholder')).toThrow('draft');
   });
 });
 
@@ -70,6 +82,9 @@ describe('prompt settings API', () => {
       variables: ['visualRecapJson'],
     });
     expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'context.cache-generation')).toMatchObject({ category: 'Context', overridden: false });
+    expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'request.polish-note')).toMatchObject({ category: 'Action requests', variables: ['draft'] });
+    const modelSettings = await app.inject({ method: 'GET', url: '/api/settings/models', headers: { cookie } });
+    expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'polish-note', modelId: 'gpt-5.6-luna' });
     const saved = await app.inject({
       method: 'PUT',
       url: '/api/settings/prompts/contract.explain',

@@ -22,6 +22,7 @@ const defaultProfiles:Record<ModelProfile['name'],string[]>= {
 };
 const defaultTaskModels:Record<TaskAction,string>={
   define:'gpt-5.6-luna', explain:'gpt-5.6-terra', eli14:'gpt-5.6-luna', ask:'gpt-5.6-terra',
+  'polish-note':'gpt-5.6-luna',
   visualize:'gpt-5.6-sol', research:'gpt-5.6-sol', summarize:'gpt-5.6-terra', tldr:'gpt-5.6-luna',
   'half-page':'gpt-5.6-terra', 'visual-recap':'gpt-5.6-sol', compact:'gpt-5.6-luna',
 };

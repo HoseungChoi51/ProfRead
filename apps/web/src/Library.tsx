@@ -4,7 +4,7 @@ import {SettingsPage} from './Settings.js';
 
 type Document={id:string;title:string;version_id:string;version:number;token_estimate:number;checked_count:number;offset_ratio:number|null;created_at:string;group_id:string|null};
 type ArticleGroup={id:string;name:string;document_count:number;created_at:string;updated_at:string};
-const taskLabels:Record<string,string>={define:'Define one word',explain:'Explain',eli14:'Explain for a 14-year-old',ask:'Ask / follow-up',visualize:'Structured diagram',research:'Web research',summarize:'Summarize',tldr:'TL;DR',compact:'Compact note','half-page':'Half-page summary','visual-recap':'Visual recap image'};
+const taskLabels:Record<string,string>={define:'Define one word',explain:'Explain',eli14:'Explain for a 14-year-old',ask:'Ask / follow-up','polish-note':'Polish annotation',visualize:'Structured diagram',research:'Web research',summarize:'Summarize',tldr:'TL;DR',compact:'Compact note','half-page':'Half-page summary','visual-recap':'Visual recap image'};
 type PromptSetting={key:string;category:string;label:string;description:string;template:string;defaultTemplate:string;variables:string[];requiredVariables?:string[];overridden:boolean;updatedAt:string|null};
 const isSettingsPanel=(panel:string|null)=>panel==='settings';
 

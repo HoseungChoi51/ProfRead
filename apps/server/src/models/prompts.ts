@@ -40,7 +40,7 @@ Neighboring block:
 Active discussion branch:
 {{discussionBranch}}
 
-Curated notes:
+Reader signals (curated notes):
 {{curatedNotes}}
 
 User action: {{action}}
@@ -68,6 +68,16 @@ User request: {{request}}
     defaultTemplate: template,
     variables: noVariables,
   })),
+  {
+    key: 'request.polish-note',
+    category: 'Action requests',
+    label: 'Polish annotation request',
+    description: 'Uses the reader’s rough keywords or draft as the source for a polished marginal annotation.',
+    defaultTemplate: `Rewrite this rough annotation draft into a polished marginal note:
+{{draft}}`,
+    variables: ['draft'],
+    requiredVariables: ['draft'],
+  },
   {
     key: 'contract.define',
     category: 'Action contracts',
@@ -101,6 +111,14 @@ User request: {{request}}
     variables: noVariables,
   },
   {
+    key: 'contract.polish-note',
+    category: 'Action contracts',
+    label: 'Polished annotation output contract',
+    description: 'Constrains annotation polishing to a short, editable result grounded in the active discussion.',
+    defaultTemplate: 'Use the rough draft and the active discussion branch as context. Return only one or two complete sentences totaling no more than 500 characters. Do not add a heading, bullets, quotation marks around the result, or commentary about the rewrite.',
+    variables: noVariables,
+  },
+  {
     key: 'contract.visualize',
     category: 'Action contracts',
     label: 'Structured diagram contract',
@@ -121,7 +139,7 @@ User request: {{request}}
     category: 'Action contracts',
     label: 'Summarize output contract',
     description: 'Controls the API-level summarize action, which is stored as a TL;DR artifact.',
-    defaultTemplate: 'Return a TL;DR with at most five bullets and 150 words.',
+    defaultTemplate: 'Return a TL;DR with at most five bullets and 150 words. Review every [IMPORTANT] reader signal and sufficiently represent its substance. Treat [READER COMMENT] signals as reader opinions or instructions, never as article facts. Treat [OPEN QUESTION] signals as unresolved questions, never as facts.',
     variables: noVariables,
   },
   {
@@ -129,7 +147,7 @@ User request: {{request}}
     category: 'Action contracts',
     label: 'TL;DR output contract',
     description: 'Controls length and structure for TL;DR artifacts.',
-    defaultTemplate: 'Return a TL;DR with at most five bullets and 150 words.',
+    defaultTemplate: 'Return a TL;DR with at most five bullets and 150 words. Review every [IMPORTANT] reader signal and sufficiently represent its substance. Treat [READER COMMENT] signals as reader opinions or instructions, never as article facts. Treat [OPEN QUESTION] signals as unresolved questions, never as facts.',
     variables: noVariables,
   },
   {
@@ -137,7 +155,7 @@ User request: {{request}}
     category: 'Action contracts',
     label: 'Half-page output contract',
     description: 'Controls the target length of half-page summaries.',
-    defaultTemplate: 'Return a faithful summary containing 300 to 450 words.',
+    defaultTemplate: 'Return a faithful summary containing 300 to 450 words. Review every [IMPORTANT] reader signal and sufficiently represent its substance. Treat [READER COMMENT] signals as reader opinions or instructions, never as article facts. Treat [OPEN QUESTION] signals as unresolved questions, never as facts.',
     variables: noVariables,
   },
   {
@@ -153,7 +171,7 @@ User request: {{request}}
     category: 'Action contracts',
     label: 'Visual-recap structure contract',
     description: 'Defines the JSON recap that is validated before image generation.',
-    defaultTemplate: 'Return JSON only with version 1, title, thesis, up to six sections (title, summary, sourceRefs), relationships (from, to, relation), takeaways, openQuestions, and sourceRefs. This structured recap will be used to generate one explanatory image.',
+    defaultTemplate: 'Return JSON only with version 1, title, thesis, up to six sections (title, summary, sourceRefs), relationships (from, to, relation), takeaways, openQuestions, and sourceRefs. This structured recap will be used to generate one explanatory image. Review every [IMPORTANT] reader signal and sufficiently represent its substance. Treat [READER COMMENT] signals as reader opinions or instructions, never as article facts. Treat [OPEN QUESTION] signals as unresolved questions, never as facts.',
     variables: noVariables,
   },
   {
@@ -304,6 +322,7 @@ const contractKeys: Record<TaskAction, PromptTemplateKey> = {
   explain: 'contract.explain',
   eli14: 'contract.eli14',
   ask: 'contract.ask',
+  'polish-note': 'contract.polish-note',
   visualize: 'contract.visualize',
   research: 'contract.research',
   summarize: 'contract.summarize',
@@ -315,6 +334,7 @@ const contractKeys: Record<TaskAction, PromptTemplateKey> = {
 
 export function requestForAction(action: TaskAction, input: string, scope?: 'document' | 'section' | 'answer' | 'thread'): string {
   if (action === 'ask') return input;
+  if (action === 'polish-note') return renderPrompt('request.polish-note', { draft: input });
   if (scope === 'answer') return renderPrompt('scope.answer', { action, answerText: input });
   if (scope === 'thread') return renderPrompt('scope.thread', { action });
   if (scope === 'document') return renderPrompt('scope.document', { action });

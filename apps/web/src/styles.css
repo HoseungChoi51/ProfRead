@@ -71,7 +71,11 @@ select{font:inherit}.article-group-section{margin-top:2.8rem}.article-group-sect
 
 /* Selection actions stay clear of the exact range; Ask becomes an article dock. */
 .paper{position:relative;display:grid;grid-template-rows:minmax(0,1fr);overflow:hidden}
-.paper.selection-composing{grid-template-rows:minmax(0,1fr) auto}
+.paper.selection-composing,.paper.selection-highlighting{grid-template-rows:minmax(0,1fr) auto}
+.paper.selection-actions-top-dock{grid-template-rows:auto minmax(0,1fr)}
+.paper.selection-actions-bottom-dock{grid-template-rows:minmax(0,1fr) auto}
+.paper.selection-actions-top-dock iframe{grid-row:2}
+.paper.selection-actions-bottom-dock iframe{grid-row:1}
 .paper iframe{min-height:0}
 .selection-tools{position:absolute;z-index:20;max-width:min(620px,calc(100% - 16px));padding:.3rem;background:rgba(251,250,245,.9);color:var(--ink);border:1px solid #bdb7aa;border-radius:6px;box-shadow:0 8px 24px #302d2628;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .selection-tools[data-positioned="false"]{visibility:hidden}
@@ -79,18 +83,29 @@ select{font:inherit}.article-group-section{margin-top:2.8rem}.article-group-sect
 .selection-tools button:hover,.selection-tools button:focus-visible{background:#e9ede6}
 .selection-tools select{width:142px;padding:.4rem .5rem;background:#fff;color:var(--ink);border:1px solid var(--line)}
 .selection-tools .close{color:var(--rust);font-size:1.05rem;padding:.16rem .45rem}
+.selection-tools[data-mode="dock"]{position:relative;inset:auto!important;visibility:visible!important;width:100%;max-width:none;margin:0}
+.selection-tools[data-mode="dock"][data-side="top-dock"]{grid-row:1;margin-bottom:.55rem}
+.selection-tools[data-mode="dock"][data-side="bottom-dock"]{grid-row:2;margin-top:.55rem}
 .selection-composer{grid-row:2;display:grid;grid-template-columns:minmax(7rem,.65fr) minmax(12rem,1.5fr) minmax(9rem,.7fr) auto auto;align-items:center;gap:.45rem;margin-top:.55rem;padding:.65rem .7rem;background:#f8f5ed;border:1px solid var(--line);box-shadow:0 -4px 18px #423e3412}
 .selection-composer-context{min-width:0;overflow:hidden;color:var(--muted);font:italic .78rem/1.35 Georgia,serif;text-overflow:ellipsis;white-space:nowrap}
-.selection-composer input,.selection-composer select{min-width:0;width:100%;margin:0;padding:.62rem .7rem;border:1px solid var(--line);background:#fff;color:var(--ink)}
+.selection-composer input,.selection-composer select,.selection-composer textarea{min-width:0;width:100%;margin:0;padding:.62rem .7rem;border:1px solid var(--line);background:#fff;color:var(--ink)}
+.selection-composer textarea{min-height:2.8rem;max-height:7rem;resize:vertical;font:inherit}
 .selection-composer button{align-self:stretch;padding:.55rem .8rem}
 .selection-composer .primary:disabled{opacity:.5;cursor:default}
+.highlight-composer{grid-template-columns:minmax(7rem,.65fr) minmax(8rem,.4fr) minmax(12rem,1.35fr) auto auto}.highlight-kind-help{color:var(--muted);font-size:.75rem;line-height:1.35}
 @media(max-width:900px){
-  .paper.selection-actions,.paper.selection-composing{grid-template-rows:minmax(0,1fr) auto}
+  .paper.selection-actions,.paper.selection-composing,.paper.selection-highlighting{grid-template-rows:minmax(0,1fr) auto}
   .selection-tools{position:relative;grid-row:2;inset:auto!important;visibility:visible!important;width:100%;max-width:none;margin-top:.55rem}
   .selection-composer{grid-template-columns:minmax(0,1fr) auto auto}
   .selection-composer-context,.selection-composer input{grid-column:1/-1}
+  .highlight-composer{grid-template-columns:minmax(0,1fr) auto auto}.highlight-composer .selection-composer-context,.highlight-composer textarea,.highlight-composer .highlight-kind-help{grid-column:1/-1}
 }
 @media(max-width:560px){
   .selection-composer{grid-template-columns:minmax(0,1fr) auto}
   .selection-composer select{grid-column:1/-1}
 }
+
+/* Semantic reader signals, thread annotations, and summary freshness. */
+.highlight-card{padding:1rem;background:var(--paper);border:1px solid var(--line);border-left:4px solid #e1b83f}.highlight-card.highlight-question{border-left-color:#5a91bd}.highlight-card.highlight-comment{border-left-color:#c77e9b}.highlight-card>header{display:flex;align-items:center;gap:.45rem;margin-bottom:.45rem;text-transform:capitalize}.highlight-kind-dot{width:.65rem;height:.65rem;border-radius:50%;background:#e1b83f}.highlight-question .highlight-kind-dot{background:#5a91bd}.highlight-comment .highlight-kind-dot{background:#c77e9b}.highlight-card label{display:grid;gap:.3rem;margin:.7rem 0;color:var(--muted);font-size:.72rem}.highlight-card select,.highlight-card textarea{width:100%;padding:.6rem;border:1px solid var(--line);background:#fff;color:var(--ink);font:inherit}.highlight-card textarea{min-height:7rem;resize:vertical}.highlight-card>small{display:block;color:var(--muted);line-height:1.45}.highlight-card>footer,.thread-annotation>footer{display:flex;align-items:center;justify-content:flex-end;gap:.4rem;margin-top:.75rem}.highlight-card>footer .danger-link,.thread-annotation>footer .danger-link{margin-right:auto}.artifact-freshness{display:grid;gap:.15rem;margin:.65rem 0;padding:.5rem .6rem;border-left:3px solid #8b8e86;background:#efede5;color:#555b54;font-size:.68rem}.artifact-freshness span{color:var(--muted)}.artifact-freshness.freshness-current{border-left-color:#668269;background:#edf2e9}.artifact-freshness.freshness-needs-review{border-left-color:#b4753f;background:#f7eadc}.thread-annotation{margin:.2rem 0 .8rem;padding:.7rem;border:1px solid #d9d5c9;background:#f4f2eb}.thread-annotation>header{display:grid;gap:.15rem;margin-bottom:.5rem}.thread-annotation>header b{font-size:.75rem}.thread-annotation>header small{color:var(--muted);font-size:.65rem}.thread-annotation textarea{display:block;width:100%;min-height:5.5rem;padding:.6rem;border:1px solid var(--line);background:#fff;color:var(--ink);font:inherit;resize:vertical}.thread-annotation footer button{padding:.42rem .55rem;font-size:.7rem}.thread-annotation footer button:disabled,.message-actions button:disabled,.thread-actions button:disabled{opacity:.5;cursor:default}
+@media(max-width:560px){.highlight-composer{grid-template-columns:minmax(0,1fr) auto}.highlight-composer select{grid-column:1/-1}.thread-annotation>footer{align-items:stretch;flex-direction:column}.thread-annotation>footer .danger-link{margin-right:0}}
+.mobile-edit-button{display:none}@media(max-width:600px){.mobile-edit-button{display:inline-flex}}
