@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { MarkdownContent } from "./Reader.js";
+import { copyTextToClipboard, MarkdownContent } from "./Reader.js";
 
 describe("MarkdownContent", () => {
   it("renders model Markdown while ignoring raw HTML and remote images", () => {
@@ -25,5 +25,27 @@ describe("MarkdownContent", () => {
     expect(html).toContain("[Image: remote diagram]");
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<img");
+  });
+});
+
+describe("copyTextToClipboard", () => {
+  it("writes the exact selected text with the Clipboard API", async () => {
+    const writes: string[] = [];
+    await copyTextToClipboard(
+      "Exact selected passage",
+      { writeText: async (text) => { writes.push(text); } },
+      () => false,
+    );
+    expect(writes).toEqual(["Exact selected passage"]);
+  });
+
+  it("falls back when Clipboard API permission is denied", async () => {
+    let fallbackText = "";
+    await copyTextToClipboard(
+      "Fallback passage",
+      { writeText: async () => { throw new Error("denied"); } },
+      (text) => { fallbackText = text; return true; },
+    );
+    expect(fallbackText).toBe("Fallback passage");
   });
 });

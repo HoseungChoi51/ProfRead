@@ -98,6 +98,40 @@ function closeSummaryMenus(): void {
     .querySelectorAll<HTMLDetailsElement>(".summary-menu[open]")
     .forEach((menu) => (menu.open = false));
 }
+type ClipboardWriter = { writeText: (text: string) => Promise<void> };
+
+function copyWithTemporaryTextarea(text: string): boolean {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    return document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+}
+
+export async function copyTextToClipboard(
+  text: string,
+  clipboard: ClipboardWriter | undefined =
+    typeof navigator === "undefined" ? undefined : navigator.clipboard,
+  fallback: (value: string) => boolean = copyWithTemporaryTextarea,
+): Promise<void> {
+  if (clipboard) {
+    try {
+      await clipboard.writeText(text);
+      return;
+    } catch {
+      // Permission policies can reject the modern API even on HTTPS.
+    }
+  }
+  if (!fallback(text)) throw new Error("Your browser blocked clipboard access");
+}
+
 
 export function Reader({
   documentId,
@@ -117,6 +151,7 @@ export function Reader({
       () => sessionStorage.getItem("afterdraft-repair-id") ?? "",
     ),
     [selection, setSelection] = useState<Selection | null>(null),
+    [copiedSelectionKey, setCopiedSelectionKey] = useState(""),
     [error, setError] = useState(""),
     [question, setQuestion] = useState(""),
     [running, setRunning] = useState<string | null>(null),
@@ -407,6 +442,18 @@ export function Reader({
       }),
     });
   };
+  async function copySelectionText() {
+    if (!selection?.exact) return;
+    setError("");
+    try {
+      await copyTextToClipboard(selection.exact);
+      setCopiedSelectionKey(
+        `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   async function act(action: keyof typeof actionLabels) {
     if (!selection || !doc) return;
     setError("");
@@ -1215,6 +1262,18 @@ export function Reader({
           role="toolbar"
           aria-label="Selection actions"
         >
+          {selection.exact && (
+            <button
+              onClick={() => void copySelectionText()}
+              aria-label="Copy selected text"
+              aria-live="polite"
+            >
+              {copiedSelectionKey ===
+              `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`
+                ? "Copied"
+                : "Copy"}
+            </button>
+          )}
           {repairId && (
             <button className="repair-action" onClick={repairAnchor}>
               Attach annotation here
