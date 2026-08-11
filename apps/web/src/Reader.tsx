@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -54,6 +61,64 @@ type Selection = AnchorSelector & {
   rect: { top: number; left: number; width: number; height: number };
   visual?: { mimeType: "image/png"; data: string };
 };
+export type SelectionRect = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+};
+type PopoverSize = { width: number; height: number };
+export type PopoverPlacement = {
+  top: number;
+  left: number;
+  side: "above" | "below" | "top-edge" | "bottom-edge";
+};
+
+export function translateIframeRect(
+  rect: SelectionRect,
+  frame: Pick<DOMRect, "top" | "left">,
+): SelectionRect {
+  return {
+    ...rect,
+    top: frame.top + rect.top,
+    left: frame.left + rect.left,
+  };
+}
+
+export function placeSelectionPopover(
+  selection: SelectionRect,
+  popover: PopoverSize,
+  pane: SelectionRect,
+  gap = 12,
+  inset = 8,
+): PopoverPlacement {
+  const paneRight = pane.left + pane.width;
+  const paneBottom = pane.top + pane.height;
+  const selectionBottom = selection.top + selection.height;
+  const minLeft = pane.left + inset;
+  const maxLeft = Math.max(minLeft, paneRight - inset - popover.width);
+  const left = Math.min(
+    maxLeft,
+    Math.max(
+      minLeft,
+      selection.left + selection.width / 2 - popover.width / 2,
+    ),
+  );
+  const above = selection.top - gap - popover.height;
+  const below = selectionBottom + gap;
+  const topEdge = pane.top + inset;
+  const bottomEdge = Math.max(topEdge, paneBottom - inset - popover.height);
+
+  if (above >= topEdge) return { top: above, left, side: "above" };
+  if (below + popover.height <= paneBottom - inset)
+    return { top: below, left, side: "below" };
+
+  const roomAbove = Math.max(0, selection.top - pane.top);
+  const roomBelow = Math.max(0, paneBottom - selectionBottom);
+  return roomAbove >= roomBelow
+    ? { top: topEdge, left, side: "top-edge" }
+    : { top: bottomEdge, left, side: "bottom-edge" };
+}
 type EditContext = {
   blockId: string;
   kind: "text" | "heading" | "visual";
@@ -151,6 +216,11 @@ export function Reader({
       () => sessionStorage.getItem("afterdraft-repair-id") ?? "",
     ),
     [selection, setSelection] = useState<Selection | null>(null),
+    [selectionPanel, setSelectionPanel] = useState<"actions" | "composing">(
+      "actions",
+    ),
+    [popoverPosition, setPopoverPosition] =
+      useState<PopoverPlacement | null>(null),
     [copiedSelectionKey, setCopiedSelectionKey] = useState(""),
     [error, setError] = useState(""),
     [question, setQuestion] = useState(""),
@@ -170,8 +240,10 @@ export function Reader({
       const stored = Number(localStorage.getItem("afterdraft-sidebar-width"));
       return clampSidebar(Number.isFinite(stored) && stored ? stored : 640);
     });
-  const iframe = useRef<HTMLIFrameElement>(null),
+  const paper = useRef<HTMLElement>(null),
+    iframe = useRef<HTMLIFrameElement>(null),
     toolbar = useRef<HTMLDivElement>(null),
+    questionInput = useRef<HTMLInputElement>(null),
     aborter = useRef<AbortController | null>(null),
     scrollRatio = useRef(0),
     pendingEditsRef = useRef<DocumentEditOperation[]>([]),
@@ -246,14 +318,40 @@ export function Reader({
         event.data?.source !== "afterdraft"
       )
         return;
-      if (event.data.type === "selection")
-        setSelection({ ...event.data, blockType: "text" });
+      if (event.data.type === "selection") {
+        const frame = iframe.current?.getBoundingClientRect();
+        setSelection({
+          ...event.data,
+          blockType: "text",
+          rect: frame
+            ? translateIframeRect(event.data.rect, frame)
+            : event.data.rect,
+        });
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
+      }
+      if (event.data.type === "selection-geometry") {
+        const frame = iframe.current?.getBoundingClientRect();
+        const rect = frame
+          ? translateIframeRect(event.data.rect, frame)
+          : event.data.rect;
+        setSelection((current) =>
+          current && current.blockId === event.data.blockId
+            ? { ...current, rect }
+            : current,
+        );
+      }
       if (event.data.type === "background-click") {
         setSelection(null);
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
         setEditContext(null);
         closeSummaryMenus();
       }
-      if (event.data.type === "block-selection")
+      if (event.data.type === "block-selection") {
+        const frame = iframe.current?.getBoundingClientRect();
         setSelection({
           blockId: event.data.blockId,
           blockType:
@@ -263,8 +361,14 @@ export function Reader({
           suffix: "",
           startOffset: 0,
           endOffset: 0,
-          rect: event.data.rect,
+          rect: frame
+            ? translateIframeRect(event.data.rect, frame)
+            : event.data.rect,
         });
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
+      }
       if (event.data.type === "visual-capture")
         setSelection((current) => {
           if (!current || current.blockId !== event.data.blockId)
@@ -336,6 +440,9 @@ export function Reader({
       if (event.data.type === "anchor-click") {
         setDrawer(true);
         setSelection(null);
+        setSelectionPanel("actions");
+        setPopoverPosition(null);
+        setQuestion("");
         const target = threads.find((t) => t.anchor_id === event.data.anchorId);
         if (target) setActiveEntry({ type: "thread", id: target.id });
       }
@@ -353,11 +460,14 @@ export function Reader({
       if (
         target instanceof Element &&
         target.closest(
-          ".selection-tools,.edit-context-menu,.summary-menu,.edit-dialog",
+          ".selection-tools,.selection-composer,.edit-context-menu,.summary-menu,.edit-dialog",
         )
       )
         return;
       setSelection(null);
+      setSelectionPanel("actions");
+      setPopoverPosition(null);
+      setQuestion("");
       setEditContext(null);
       closeSummaryMenus();
     };
@@ -402,13 +512,93 @@ export function Reader({
     return () => removeEventListener("beforeunload", warn);
   }, []);
   useEffect(() => {
-    if (selection)
-      requestAnimationFrame(() =>
+    if (!selection) return;
+    const frame = requestAnimationFrame(() => {
+      if (selectionPanel === "composing") questionInput.current?.focus();
+      else
         toolbar.current
           ?.querySelector<HTMLElement>("button,select,input")
-          ?.focus(),
+          ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    selection?.blockId,
+    selection?.exact,
+    selectionPanel,
+  ]);
+  const updatePopoverPosition = useCallback(() => {
+    if (
+      !selection ||
+      selectionPanel !== "actions" ||
+      window.matchMedia("(max-width: 900px)").matches
+    ) {
+      setPopoverPosition(null);
+      return;
+    }
+    const element = toolbar.current;
+    const paneElement = iframe.current;
+    const paperElement = paper.current;
+    if (!element || !paneElement || !paperElement) return;
+    const paneRect = paneElement.getBoundingClientRect();
+    const paperRect = paperElement.getBoundingClientRect();
+    const measured = element.getBoundingClientRect();
+    const placed = placeSelectionPopover(
+      selection.rect,
+      { width: measured.width, height: measured.height },
+      {
+        top: paneRect.top,
+        left: paneRect.left,
+        width: paneRect.width,
+        height: paneRect.height,
+      },
+    );
+    const next = {
+      ...placed,
+      top: placed.top - paperRect.top,
+      left: placed.left - paperRect.left,
+    };
+    setPopoverPosition((current) =>
+      current &&
+      current.top === next.top &&
+      current.left === next.left &&
+      current.side === next.side
+        ? current
+        : next,
+    );
+  }, [selection, selectionPanel]);
+  useLayoutEffect(() => {
+    if (!selection || selectionPanel !== "actions") return;
+    updatePopoverPosition();
+    const refresh = () => {
+      iframe.current?.contentWindow?.postMessage(
+        { type: "refresh-selection" },
+        "*",
       );
-  }, [selection?.blockId, selection?.exact]);
+      updatePopoverPosition();
+    };
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(refresh);
+    if (toolbar.current) observer?.observe(toolbar.current);
+    if (paper.current) observer?.observe(paper.current);
+    if (iframe.current) observer?.observe(iframe.current);
+    addEventListener("resize", refresh);
+    return () => {
+      observer?.disconnect();
+      removeEventListener("resize", refresh);
+    };
+  }, [selection, selectionPanel, sidebarWidth, updatePopoverPosition]);
+  useEffect(() => {
+    if (!selection) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeSelectionPanel();
+    };
+    addEventListener("keydown", escape);
+    return () => removeEventListener("keydown", escape);
+  }, [selection]);
   useEffect(() => {
     const save = () =>
       api(`/api/documents/${documentId}/progress`, {
@@ -424,6 +614,35 @@ export function Reader({
       save();
     };
   }, [documentId]);
+  function closeSelectionPanel() {
+    iframe.current?.contentWindow?.postMessage(
+      { type: "clear-stored-selection" },
+      "*",
+    );
+    setSelection(null);
+    setSelectionPanel("actions");
+    setPopoverPosition(null);
+    setQuestion("");
+  }
+  function revealStoredSelection() {
+    if (!selection) return;
+    iframe.current?.contentWindow?.postMessage(
+      {
+        type: "reveal-selection",
+        blockId: selection.blockId,
+        startOffset: selection.startOffset,
+        endOffset: selection.endOffset,
+      },
+      "*",
+    );
+  }
+  function openAskComposer() {
+    setSelectionPanel("composing");
+    setPopoverPosition(null);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(revealStoredSelection),
+    );
+  }
   const createAnchor = async () => {
     if (!selection || !doc) throw new Error("Select something first");
     return api<{ id: string }>("/api/anchors", {
@@ -455,7 +674,7 @@ export function Reader({
     }
   }
   async function act(action: keyof typeof actionLabels) {
-    if (!selection || !doc) return;
+    if (!selection || !doc || running) return;
     setError("");
     try {
       if (action === "define") {
@@ -468,7 +687,7 @@ export function Reader({
         if (existing) {
           setDrawer(true);
           setActiveEntry({ type: "thread", id: existing.id });
-          setSelection(null);
+          closeSelectionPanel();
           return;
         }
       }
@@ -479,7 +698,7 @@ export function Reader({
           body: JSON.stringify({ anchorId: anchor.id, checked: true }),
         });
         await loadHighlights();
-        setSelection(null);
+        closeSelectionPanel();
         return;
       }
       const prompt =
@@ -500,7 +719,7 @@ export function Reader({
       });
       setDrawer(true);
       setActiveEntry({ type: "thread", id: thread.id });
-      setSelection(null);
+      closeSelectionPanel();
       await run(
         thread.id,
         anchor.id,
@@ -805,7 +1024,13 @@ export function Reader({
   }
   useEffect(() => {
     if (selection && doc) void preview("ask");
-  }, [selection, doc?.version_id, modelOverride]);
+  }, [
+    selection?.blockId,
+    selection?.exact,
+    selection?.blockType,
+    doc?.version_id,
+    modelOverride,
+  ]);
   function queueEdit(operation: DocumentEditOperation) {
     const next = [...pendingEditsRef.current, operation];
     pendingEditsRef.current = next;
@@ -1100,7 +1325,14 @@ export function Reader({
         className="reader-grid"
         style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
       >
-        <section className="paper">
+        <section
+          ref={paper}
+          className={`paper${
+            !editMode && selection
+              ? ` selection-${selectionPanel}`
+              : ""
+          }`}
+        >
           <iframe
             key={contentEpoch}
             ref={iframe}
@@ -1108,6 +1340,134 @@ export function Reader({
             src={`/api/versions/${doc.version_id}/content`}
             sandbox="allow-scripts allow-same-origin allow-presentation"
           />
+          {!editMode && selection && selectionPanel === "actions" && (
+            <div
+              ref={toolbar}
+              className="selection-tools"
+              data-positioned={popoverPosition ? "true" : "false"}
+              data-side={popoverPosition?.side}
+              style={
+                popoverPosition
+                  ? { top: popoverPosition.top, left: popoverPosition.left }
+                  : undefined
+              }
+              role="toolbar"
+              aria-label="Selection actions"
+            >
+              {selection.exact && (
+                <button
+                  onClick={() => void copySelectionText()}
+                  aria-label="Copy selected text"
+                  aria-live="polite"
+                >
+                  {copiedSelectionKey ===
+                  `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`
+                    ? "Copied"
+                    : "Copy"}
+                </button>
+              )}
+              {repairId && (
+                <button className="repair-action" onClick={repairAnchor}>
+                  Attach annotation here
+                </button>
+              )}
+              {!repairId && (
+                <select
+                  aria-label="Model override"
+                  value={modelOverride}
+                  onChange={(event) => {
+                    setModelOverride(event.target.value);
+                    void preview("ask");
+                  }}
+                >
+                  <option value="">Automatic model</option>
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {!repairId &&
+                (
+                  Object.keys(actionLabels) as Array<
+                    keyof typeof actionLabels
+                  >
+                ).map((action) => (
+                  <button
+                    key={action}
+                    onPointerEnter={() => void preview(action)}
+                    onFocus={() => void preview(action)}
+                    onClick={() => {
+                      if (action === "ask") openAskComposer();
+                      else void act(action);
+                    }}
+                  >
+                    {actionLabels[action]}
+                  </button>
+                ))}
+              <button
+                className="close"
+                onClick={closeSelectionPanel}
+                aria-label="Close selection actions"
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {!editMode && selection && selectionPanel === "composing" && (
+            <div
+              className="selection-composer"
+              role="group"
+              aria-label="Ask about selected passage"
+            >
+              <span
+                className="selection-composer-context"
+                title={selection.exact || "Selected visual"}
+              >
+                {selection.exact || "Selected visual"}
+              </span>
+              <input
+                ref={questionInput}
+                aria-label="Question"
+                placeholder="Ask about this passage…"
+                value={question}
+                onChange={(event) => setQuestion(event.target.value)}
+                onFocus={() => void preview("ask")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void act("ask");
+                  }
+                }}
+              />
+              <select
+                aria-label="Model override"
+                value={modelOverride}
+                onChange={(event) => {
+                  setModelOverride(event.target.value);
+                  void preview("ask");
+                }}
+              >
+                <option value="">Automatic model</option>
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="primary"
+                disabled={Boolean(running)}
+                onClick={() => void act("ask")}
+              >
+                Send
+              </button>
+              <button className="quiet" onClick={closeSelectionPanel}>
+                Close
+              </button>
+            </div>
+          )}
         </section>
         <div
           className="reader-divider"
@@ -1251,81 +1611,6 @@ export function Reader({
           )}
         </aside>
       </div>
-      {!editMode && selection && (
-        <div
-          ref={toolbar}
-          className="selection-tools"
-          style={{
-            top: Math.max(72, selection.rect.top + 92),
-            left: Math.min(innerWidth - 620, Math.max(12, selection.rect.left)),
-          }}
-          role="toolbar"
-          aria-label="Selection actions"
-        >
-          {selection.exact && (
-            <button
-              onClick={() => void copySelectionText()}
-              aria-label="Copy selected text"
-              aria-live="polite"
-            >
-              {copiedSelectionKey ===
-              `${selection.blockId}:${selection.startOffset}:${selection.endOffset}`
-                ? "Copied"
-                : "Copy"}
-            </button>
-          )}
-          {repairId && (
-            <button className="repair-action" onClick={repairAnchor}>
-              Attach annotation here
-            </button>
-          )}
-          <select
-            aria-label="Model override"
-            value={modelOverride}
-            onChange={(e) => {
-              setModelOverride(e.target.value);
-              void preview("ask");
-            }}
-          >
-            <option value="">Automatic model</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-          {!repairId &&
-            (Object.keys(actionLabels) as Array<keyof typeof actionLabels>).map(
-              (action) => (
-                <button
-                  key={action}
-                  onPointerEnter={() => preview(action)}
-                  onFocus={() => preview(action)}
-                  onClick={() => act(action)}
-                >
-                  {actionLabels[action]}
-                </button>
-              ),
-            )}
-          <input
-            aria-label="Question"
-            placeholder="Ask about this…"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            onFocus={() => preview("ask")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !repairId) act("ask");
-            }}
-          />
-          <button
-            className="close"
-            onClick={() => setSelection(null)}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-      )}
       {editMode && editContext && (
         <div
           className="edit-context-menu"
