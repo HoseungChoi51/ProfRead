@@ -146,10 +146,14 @@ export function importAuditReplayKey(input:Pick<ImportAuditRequest,'jobId'|'ordi
   return`academic:${input.jobId}:${input.ordinal}:${input.action}:${fingerprint.slice(0,32)}`;
 }
 
+export function appendImportAuditReferenceContract(prompt:string,evidenceRefs:string[],targetRefs:string[]):string{
+  return`${prompt}\n\nAuthoritative reference namespaces for this call:\nAllowed evidenceRefs JSON: ${JSON.stringify(evidenceRefs)}\nAllowed targetRefs JSON: ${JSON.stringify(targetRefs)}\n- coverage.reviewedRefs and coverage.unreviewedRefs must partition exactly the allowed evidenceRefs. Never put a targetRef in coverage.\n- findings[].evidenceRefs and findings[].requestedEvidenceRefs may use only allowed evidenceRefs.\n- findings[].targetRefs and suggestedRepair targetRef, captionRef, or destinationRef fields may use only allowed targetRefs. Never put an evidenceRef in a target field.\n- If evidence supports a finding but no allowed targetRef applies, use an empty targetRefs array and null suggestedRepair.\nCopy reference strings exactly; do not invent, translate, shorten, or reclassify them.`;
+}
+
 export async function runImportAudit(input:ImportAuditRequest):Promise<ImportAuditResult>{
   if(!Number.isInteger(input.ordinal)||input.ordinal<1||input.ordinal>40)throw new Error('Import audit ordinal must be between 1 and 40');
   const configured=taskModelId(input.action);if(!configured)throw new Error(`No model is configured for ${input.action}`);
-  const images=validatedImages(input.images??[]),prompt=renderPrompt(promptKey[input.action],{...input.promptValues,contract:promptTemplate('contract.import-findings')}),systemPrompt=promptTemplate('system.import-review'),baseRequestId=importAuditReplayKey(input,configured,systemPrompt,prompt);
+  const images=validatedImages(input.images??[]),prompt=appendImportAuditReferenceContract(renderPrompt(promptKey[input.action],{...input.promptValues,contract:promptTemplate('contract.import-findings')}),input.evidenceRefs,input.targetRefs),systemPrompt=promptTemplate('system.import-review'),baseRequestId=importAuditReplayKey(input,configured,systemPrompt,prompt);
   const retryPrefix=`${baseRequestId}:retry-`,replay=row<{id:string;model_id:string;response_text:string|null;input_tokens:number|null;output_tokens:number|null;status:string;error:string|null}>('SELECT id,model_id,response_text,input_tokens,output_tokens,status,error FROM model_runs WHERE request_id=? OR substr(request_id,1,?)=? ORDER BY CASE status WHEN \'completed\' THEN 0 WHEN \'running\' THEN 1 ELSE 2 END,created_at DESC LIMIT 1',baseRequestId,retryPrefix.length,retryPrefix);
   if(replay?.status==='completed'&&replay.response_text)return{report:validateImportAuditReport(JSON.parse(replay.response_text),input.evidenceRefs,input.targetRefs),runId:replay.id,modelId:replay.model_id,inputTokens:replay.input_tokens??0,outputTokens:replay.output_tokens??0};
   if(replay?.status==='running')throw new Error('Import audit request is already running');

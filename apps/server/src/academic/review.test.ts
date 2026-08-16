@@ -12,8 +12,15 @@ describe('academic review coverage planning',()=>{
   it('preflights image sizes and batches within provider limits before reads',()=>{
     const item=(id:string,bytes:number):EvidenceItem=>({id,label:id,kind:'overview',storagePath:`/${id}.png`,mimeType:'image/png',detail:'high',bytes});
     const plan=planImageBatches([item('a',19_000_000),item('too-large',20_000_001),item('b',19_000_000),item('c',19_000_000)],10);
-    expect(plan.oversize).toBe(1);expect(plan.selected.map(value=>value.id)).toEqual(['a','b','c']);
+    expect(plan.oversize).toBe(1);expect(plan.budgetExhausted).toBe(false);expect(plan.selected.map(value=>value.id)).toEqual(['a','b','c']);
     expect(plan.batches.map(batch=>batch.reduce((sum,value)=>sum+value.bytes,0))).toEqual([38_000_000,19_000_000]);
+  });
+
+  it('marks evidence omitted by the model-call image budget',()=>{
+    const item=(id:string):EvidenceItem=>({id,label:id,kind:'source-page',storagePath:`/${id}.png`,mimeType:'image/png',detail:'high',bytes:100});
+    const plan=planImageBatches([item('a'),item('b'),item('c')],2);
+    expect(plan.selected.map(value=>value.id)).toEqual(['a','b']);
+    expect(plan.budgetExhausted).toBe(true);
   });
 
   it('keeps deterministic render metrics associated with exact block IDs',()=>{
