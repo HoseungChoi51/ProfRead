@@ -1,4 +1,5 @@
 import type { ModelDefinition, ModelProvider, ProviderRunRequest, RunEvent } from '@afterdraft/shared';
+import { estimateModelRequestTokens } from './token-estimate.js';
 
 async function* sse(response: Response): AsyncIterable<{event?:string;data:string}> {
   if(!response.ok)throw new Error(`Provider returned ${response.status}: ${await response.text()}`);
@@ -15,7 +16,7 @@ export async function generateImageWithResponses(apiKey:string,modelId:string,pr
 }
 export class ResponsesProvider implements ModelProvider {
   constructor(private readonly apiKey:string,private readonly models:ModelDefinition[],private readonly baseUrl='https://api.openai.com/v1'){}
-  async listModels(){return this.models;} estimateContext(r:ProviderRunRequest){return Math.ceil(r.messages.reduce((n,m)=>n+m.content.length,0)/4);}
+  async listModels(){return this.models;} estimateContext(r:ProviderRunRequest){return estimateModelRequestTokens(r);}
   async *run(request:ProviderRunRequest):AsyncIterable<RunEvent>{
     const input=request.messages.map((m,index)=>({role:m.role,content:[{type:m.role==='assistant'?'output_text':'input_text',text:m.content},...(request.image&&index===request.messages.length-1?[{type:'input_image',image_url:`data:${request.image.mimeType};base64,${request.image.data}`}]:[])]}));
     const body:Record<string,unknown>={model:request.model.id,input,stream:true,max_output_tokens:request.model.maxOutput,...(request.previousResponseId?{previous_response_id:request.previousResponseId}:{})};
@@ -26,7 +27,7 @@ export class ResponsesProvider implements ModelProvider {
 }
 export class ChatCompletionsProvider implements ModelProvider {
   constructor(private readonly apiKey:string,private readonly models:ModelDefinition[],private readonly baseUrl:string,private readonly openRouter=false,private readonly routingControls?:Record<string,unknown>){}
-  async listModels(){return this.models;} estimateContext(r:ProviderRunRequest){return Math.ceil(r.messages.reduce((n,m)=>n+m.content.length,0)/4);}
+  async listModels(){return this.models;} estimateContext(r:ProviderRunRequest){return estimateModelRequestTokens(r);}
   async *run(request:ProviderRunRequest):AsyncIterable<RunEvent>{
     const messages=request.messages.map((m,index)=>request.image&&index===request.messages.length-1?{role:m.role,content:[{type:'text',text:m.content},{type:'image_url',image_url:{url:`data:${request.image.mimeType};base64,${request.image.data}`}}]}:m);const body:Record<string,unknown>={model:request.model.id,messages,stream:true,max_tokens:request.model.maxOutput,stream_options:{include_usage:true}};
     if(this.openRouter&&this.routingControls)body.provider=this.routingControls;if(request.tools?.some(t=>t.name==='provider_web_search')&&this.openRouter)body.plugins=[{id:'web'}];

@@ -26,6 +26,8 @@ describe('prompt templates', () => {
     expect(requestForAction('polish-note', 'causal caveat; clarify scope', 'thread')).toContain('causal caveat; clarify scope');
     expect(contractForAction('polish-note')).toContain('one or two complete sentences');
     expect(contractForAction('document-write')).toContain('propose_document_edits');
+    expect(contractForAction('document-write')).toContain('short block ref');
+    expect(contractForAction('document-write')).toContain('output version 1');
     expect(contractForAction('review-summary')).toContain('review_summary');
     for (const action of ['summarize', 'tldr', 'half-page', 'visual-recap'] as const) {
       expect(contractForAction(action)).toContain('[IMPORTANT]');
@@ -44,7 +46,8 @@ describe('prompt templates', () => {
       contract: '',
     })).toContain('User request: Explain');
     expect(renderPrompt('context.cache-generation', { briefMax: '3000', studyMax: '12000', articleText: 'Article body' })).toContain('Article body');
-    expect(renderPrompt('writer.envelope',{documentJson:'[{"id":"b1"}]',sourceSnapshots:'[]',writerConversation:'',previousProposal:'(none)',instruction:'Improve clarity',contract:contractForAction('document-write')})).toContain('Improve clarity');
+    const writerEnvelope=renderPrompt('writer.envelope',{documentJson:'{"v":2,"blocks":[["b0","p","Body"]]}',sourceSnapshots:'{"v":2,"sources":[]}',writerConversation:'{"v":2,"messages":[]}',previousProposal:'(none)',instruction:'Improve clarity',contract:contractForAction('document-write')});
+    expect(writerEnvelope).toContain('Improve clarity');expect(writerEnvelope).toContain('"b0"');expect(writerEnvelope).toContain('compact JSON tuples');
     const review=renderPrompt('summary-review.envelope',{articleText:'Current article',artifactKind:'tldr',existingSummary:'"Existing"',freshnessReasons:'reader-signals-changed',readerSignals:'[]',contract:contractForAction('review-summary')});
     expect(review).toContain('Complete current article');expect(review).toContain('Prefer KEEP');expect(review).toContain('replacement to null');expect(review).toContain('explanation; use null');
   });

@@ -43,3 +43,19 @@ describe('Responses terminal failures',()=>{
     await expect((async()=>{for await(const event of new ResponsesProvider('secret',[model]).run({model,messages:[{role:'user',content:'revise'}]})){void event}})()).rejects.toThrow('stream transport failed');
   });
 });
+
+describe('full request context estimates',()=>{
+  const tool={name:'review_summary',schema:{type:'object',properties:{decision:{type:'string'},rationale:{type:'string'}},required:['decision','rationale'],additionalProperties:false}};
+  const providers=[new ResponsesProvider('secret',[model]),new ChatCompletionsProvider('secret',[{...model,protocol:'chat-completions'}],'https://mock')];
+  for(const provider of providers){
+    it(`includes schemas and a forced tool choice for ${provider.constructor.name}`,()=>{
+      const request={model,messages:[{role:'system' as const,content:'Review safely.'},{role:'user' as const,content:'Review this summary.'}]};
+      const base=provider.estimateContext(request),withTool=provider.estimateContext({...request,tools:[tool]}),forced=provider.estimateContext({...request,tools:[tool],requiredToolName:tool.name});
+      expect(withTool).toBeGreaterThan(base);expect(forced).toBeGreaterThan(withTool);
+    });
+    it(`does not discount high-entropy ASCII for ${provider.constructor.name}`,()=>{
+      const content=Array.from({length:1_024},(_value,index)=>String.fromCharCode(33+((index*47)%94))).join(''),empty=provider.estimateContext({model,messages:[{role:'user',content:''}]}),filled=provider.estimateContext({model,messages:[{role:'user',content}]});
+      expect(filled-empty).toBeGreaterThanOrEqual(Buffer.byteLength(content,'utf8'));
+    });
+  }
+});

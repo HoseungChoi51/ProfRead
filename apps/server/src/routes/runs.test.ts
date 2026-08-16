@@ -3,6 +3,9 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../app.js';
 import { db, now, row } from '../db/index.js';
 import { importSource } from '../ingest/index.js';
+import { renderPrompt } from '../models/prompts.js';
+import { formatSummaryReviewInput, prepareSummaryReview, summaryReviewTool } from '../models/summary-review.js';
+import { estimateModelRequestTokens } from '../models/token-estimate.js';
 import { summaryBasis } from './knowledge.js';
 import { conciseAnnotationCandidate } from './runs.js';
 
@@ -72,6 +75,22 @@ describe('polish-note runs',()=>{
 });
 
 describe('semantic summary-review runs',()=>{
+  it('rejects an over-window review before provider work using the complete forced-tool request estimate',async()=>{
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.77',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const imported=await importSource({buffer:Buffer.from('<title>Review fit</title><p>The current summary predates an important reader signal.</p>'),filename:'review-fit.html',mimeType:'text/html'});if(!imported.documentId||!imported.versionId)throw new Error('Review fit fixture failed');
+    const artifactId=randomUUID(),basis=summaryBasis(imported.versionId),time=now();db.prepare(`INSERT INTO artifacts(id,document_version_id,kind,version,scope_type,scope_id,content_json,source_refs_json,promoted,basis_document_version_id,basis_revision,basis_signal_hash,created_at)
+      VALUES(?,?,'tldr',1,'document',?,?,?,0,?,?,?,?)`).run(artifactId,imported.versionId,imported.documentId,JSON.stringify('- A short existing summary.'),JSON.stringify([imported.versionId]),basis.documentVersionId,basis.revision,basis.signalHash,time);
+    const block=row<{id:string;start_offset:number;end_offset:number;text_content:string}>('SELECT id,start_offset,end_offset,text_content FROM blocks WHERE document_version_id=? AND block_type=\'text\' ORDER BY ordinal DESC LIMIT 1',imported.versionId)!,anchorId=randomUUID();db.prepare('INSERT INTO anchors(id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset,block_type,created_at)VALUES(?,?,?,?,?,?,?,?,?,?)').run(anchorId,imported.versionId,block.id,block.text_content,'','',block.start_offset,block.end_offset,'text',time);db.prepare("INSERT INTO highlights(id,anchor_id,checked,color,kind,note,created_at,updated_at)VALUES(?,?,1,'yellow','important','Cover this signal',?,?)").run(randomUUID(),anchorId,time,time);
+    const snapshot=prepareSummaryReview({artifactId,expectedArtifactVersion:1,documentId:imported.documentId,documentVersionId:imported.versionId}),reviewPrompt=formatSummaryReviewInput(snapshot),messages=[{role:'system' as const,content:renderPrompt('system.reading-partner')},{role:'user' as const,content:reviewPrompt}],withoutTool=estimateModelRequestTokens({messages}),complete=estimateModelRequestTokens({messages,tools:[summaryReviewTool],requiredToolName:summaryReviewTool.name});
+    expect(complete).toBeGreaterThan(withoutTool);
+    const configured=row<{model_id:string}>('SELECT model_id FROM task_model_routes WHERE action=\'review-summary\'')!,model=row<{context_window:number;max_output:number}>('SELECT context_window,max_output FROM model_definitions WHERE id=?',configured.model_id)!;
+    const fetchSpy=vi.fn();vi.stubGlobal('fetch',fetchSpy);db.prepare('UPDATE model_definitions SET context_window=? WHERE id=?').run(withoutTool+model.max_output,configured.model_id);
+    try{
+      const requestId=randomUUID(),response=await app.inject({method:'POST',url:'/api/runs',headers,payload:{requestId,documentVersionId:imported.versionId,action:'review-summary',input:'',artifactScopeType:'document',artifactScopeId:imported.documentId,reviewArtifactId:artifactId,expectedArtifactVersion:1}});
+      expect(response.statusCode,response.body).toBe(422);expect(response.body).toContain('cannot satisfy');expect(fetchSpy).not.toHaveBeenCalled();expect(row<{count:number}>('SELECT COUNT(*) count FROM model_runs WHERE request_id=?',requestId)?.count).toBe(0);expect(row<{count:number}>('SELECT COUNT(*) count FROM summary_reviews WHERE artifact_id=?',artifactId)?.count).toBe(0);
+    }finally{db.prepare('UPDATE model_definitions SET context_window=? WHERE id=?').run(model.context_window,configured.model_id)}
+  });
+
   it('forces one structured review call, applies KEEP with CAS, and replays without another provider call',async()=>{
     const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.74',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Review route</title><p>The complete article already supports the concise conclusion.</p>'),filename:'review-route.html',mimeType:'text/html'});
