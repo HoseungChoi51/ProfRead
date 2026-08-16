@@ -119,12 +119,34 @@ if(!migration12Applied){
   }catch(error){db.exec('ROLLBACK');throw error}
 }
 
+const migration13Applied=db.prepare('SELECT 1 FROM migrations WHERE version=13').get();
+if(!migration13Applied){
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(13,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+}
+
+const migration14Applied=db.prepare('SELECT 1 FROM migrations WHERE version=14').get();
+if(!migration14Applied){
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    const findingColumns=db.prepare('PRAGMA table_info(import_findings)').all() as Array<{name:string}>;
+    if(!findingColumns.some(column=>column.name==='corroborated'))db.exec('ALTER TABLE import_findings ADD COLUMN corroborated INTEGER NOT NULL DEFAULT 0');
+    if(!findingColumns.some(column=>column.name==='applied_at'))db.exec('ALTER TABLE import_findings ADD COLUMN applied_at TEXT');
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(14,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+}
+
 // In-memory provider controllers cannot survive a process restart. Mark every
 // durable "running" row terminal now so idempotent request replay and the
 // one-active-Writer/review guards cannot remain stuck forever.
 const interruptedAt=new Date().toISOString(),interruptedError='Interrupted by service restart';
 db.exec('BEGIN IMMEDIATE');
 try{
+  db.prepare("UPDATE import_jobs SET status='failed',stage='interrupted',error=?,updated_at=?,completed_at=? WHERE status IN ('converting','finalizing')").run(interruptedError,interruptedAt,interruptedAt);
   db.prepare("UPDATE summary_reviews SET status='failed',result_json=? WHERE status='pending'").run(JSON.stringify({error:interruptedError}));
   db.prepare("UPDATE model_attempts SET status='failed',error=?,completed_at=? WHERE status='running'").run(interruptedError,interruptedAt);
   db.prepare("UPDATE model_runs SET status='failed',error=?,completed_at=? WHERE status='running'").run(interruptedError,interruptedAt);

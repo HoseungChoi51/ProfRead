@@ -10,7 +10,8 @@ export const config = {
   password: process.env.AFTERDRAFT_PASSWORD ?? '',
   sessionSecret: process.env.AFTERDRAFT_SESSION_SECRET ?? '',
   secureCookies: process.env.NODE_ENV === 'production',
-  limits: { htmlBytes: 10 * 1024 * 1024, zipBytes: 100 * 1024 * 1024, expandedBytes: 250 * 1024 * 1024, entries: 1000 },
+  academicWorkerUrl: process.env.ACADEMIC_WORKER_URL ?? 'http://academic-worker:4312',
+  limits: { htmlBytes: 10 * 1024 * 1024, zipBytes: 100 * 1024 * 1024, workerResponseBytes: 250 * 1024 * 1024, expandedBytes: 250 * 1024 * 1024, entries: 1000 },
 };
 
 export function validateConfig(): void {

@@ -14,10 +14,16 @@ The included Compose configuration binds only to loopback. Do not expose port
 3. Run `docker compose --env-file /path/to/afterdraft.env up -d --build`, then
    proxy an HTTPS hostname to `127.0.0.1:4310`.
 
+Compose also starts the internal `academic-worker` conversion sidecar. It has
+no host port, credentials, or persistent volume; check that both services are
+healthy after a deployment. Only the main AfterDraft service should publish
+`127.0.0.1:4310`.
+
 The Compose configuration explicitly creates the engine-level
 `afterdraft-data` volume. It contains the WAL-mode SQLite database, immutable
-source files, derived assets, and exports, and must be treated as one recovery
-unit.
+source files, academic import jobs and evidence, derived assets, and exports,
+and must be treated as one recovery unit. The worker is stateless and does not
+add a second backup target.
 
 ## Consistent backup
 

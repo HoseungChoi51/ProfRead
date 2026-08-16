@@ -18,7 +18,10 @@ export const profileNameSchema = z.enum(['quick', 'standard', 'deep', 'vision', 
 export const modelProfileSchema = z.object({ name: profileNameSchema, modelIds: z.array(z.string()).min(1) });
 export type ModelProfile = z.infer<typeof modelProfileSchema>;
 
-export const taskActionSchema = z.enum(['define','explain','eli14','ask','polish-note','visualize','research','summarize','tldr','half-page','visual-recap','compact','document-write','review-summary']);
+export const taskActionSchema = z.enum([
+  'define','explain','eli14','ask','polish-note','visualize','research','summarize','tldr','half-page','visual-recap','compact','document-write','review-summary',
+  'import-triage','import-semantic-audit','import-visual-audit','import-adjudicate','import-verify-repair',
+]);
 export type TaskAction = z.infer<typeof taskActionSchema>;
 export const taskModelRouteSchema = z.object({ action: taskActionSchema, modelId: z.string().min(1) });
 export type TaskModelRoute = z.infer<typeof taskModelRouteSchema>;
@@ -38,6 +41,10 @@ export const documentEditOperationSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('fold-section'),blockId:z.string().min(1),folded:z.boolean()}),
   z.object({type:z.literal('set-caption'),blockId:z.string().min(1),label:z.string().trim().max(40),number:z.string().trim().max(20),caption:z.string().trim().max(2000)}),
   z.object({type:z.literal('resize-image'),blockId:z.string().min(1),width:z.number().int().min(48).max(4000)}),
+  z.object({type:z.literal('set-alt-text'),blockId:z.string().min(1),text:z.string().trim().max(2000)}),
+  z.object({type:z.literal('set-heading-level'),blockId:z.string().min(1),level:z.number().int().min(1).max(6)}),
+  z.object({type:z.literal('set-object-layout'),blockId:z.string().min(1),width:z.enum(['auto','content','full']),alignment:z.enum(['left','center','right']),enlargeable:z.boolean(),folded:z.boolean()}),
+  z.object({type:z.literal('move-object'),blockId:z.string().min(1),destinationBlockId:z.string().min(1),position:z.enum(['before','after'])}),
 ]);
 export type DocumentEditOperation=z.infer<typeof documentEditOperationSchema>;
 
@@ -160,6 +167,44 @@ export const summaryReviewResultSchema=z.union([summaryReviewKeepSchema,summaryR
 export type SummaryReviewResult=z.infer<typeof summaryReviewResultSchema>;
 export const summaryReviewToolName='review_summary' as const;
 
+export const importIssueCodeSchema=z.enum([
+  'missing-content','duplicate-content','broken-reading-order','front-matter','caption-association',
+  'figure-missing','figure-cropped','table-overflow','equation-degraded','citation-mismatch',
+  'template-chrome','raw-field-leak','unreadable-layout','responsive-regression','missing-alt-text',
+]);
+export type ImportIssueCode=z.infer<typeof importIssueCodeSchema>;
+export const importRepairProposalSchema=z.discriminatedUnion('type',[
+  z.object({type:z.literal('set-object-layout'),targetRef:z.string().min(1).max(64),width:z.enum(['auto','content','full']),alignment:z.enum(['left','center','right']),enlargeable:z.boolean()}),
+  z.object({type:z.literal('wrap-overflow'),targetRef:z.string().min(1).max(64)}),
+  z.object({type:z.literal('clear-fixed-dimensions'),targetRef:z.string().min(1).max(64)}),
+  z.object({type:z.literal('join-source-fragments'),targetRef:z.string().min(1).max(64),sourceRefs:z.array(z.string().min(1).max(64)).min(2).max(4)}),
+  z.object({type:z.literal('suppress-source-chrome'),targetRef:z.string().min(1).max(64),sourceRef:z.string().min(1).max(64)}),
+  z.object({type:z.literal('associate-caption'),targetRef:z.string().min(1).max(64),captionRef:z.string().min(1).max(64)}),
+  z.object({type:z.literal('move-object'),targetRef:z.string().min(1).max(64),destinationRef:z.string().min(1).max(64),position:z.enum(['before','after'])}),
+  z.object({type:z.literal('set-semantic-role'),targetRef:z.string().min(1).max(64),role:z.enum(['title','author','affiliation','abstract','keywords','heading','caption','body'])}),
+  z.object({type:z.literal('draft-alt-text'),targetRef:z.string().min(1).max(64),text:z.string().min(1).max(1000)}),
+]);
+export type ImportRepairProposal=z.infer<typeof importRepairProposalSchema>;
+export const importAuditFindingInputSchema=z.object({
+  issueCode:importIssueCodeSchema,
+  severity:z.enum(['info','warning','error']),
+  evidenceRefs:z.array(z.string().min(1).max(64)).min(1).max(20),
+  targetRefs:z.array(z.string().min(1).max(64)).max(20).default([]),
+  observation:z.string().min(1).max(2000),
+  sourceComparison:z.string().max(2000).default(''),
+  confidence:z.enum(['low','medium','high']),
+  suggestedRepair:importRepairProposalSchema.nullable().default(null),
+  requestedEvidenceRefs:z.array(z.string().min(1).max(64)).max(20).default([]),
+}).strict();
+export const importAuditReportSchema=z.object({
+  version:z.literal(1),
+  verdict:z.enum(['clean','review','blocking']),
+  coverage:z.object({reviewedRefs:z.array(z.string().min(1).max(64)).max(500),unreviewedRefs:z.array(z.string().min(1).max(64)).max(500)}).strict(),
+  findings:z.array(importAuditFindingInputSchema).max(200),
+}).strict();
+export type ImportAuditReport=z.infer<typeof importAuditReportSchema>;
+export const importAuditToolName='report_import_findings' as const;
+
 export type RunEvent =
   | { type: 'text_delta'; delta: string }
   | { type: 'citation'; citation: Citation }
@@ -172,9 +217,12 @@ export type RunEvent =
 
 export interface ProviderRunRequest {
   model: ModelDefinition; messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-  image?: { mimeType: string; data: string }; tools?: Array<{ name: string; schema: unknown }>;
+  image?: { mimeType: string; data: string };
+  images?: Array<{ id?: string; mimeType: string; data: string; detail?: 'low'|'high'|'original'|'auto' }>;
+  tools?: Array<{ name: string; schema: unknown }>;
   previousResponseId?: string;
   requiredToolName?: string;
+  store?: boolean;
   signal?: AbortSignal;
 }
 export interface ModelProvider {

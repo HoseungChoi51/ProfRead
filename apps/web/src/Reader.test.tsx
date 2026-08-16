@@ -1,15 +1,19 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  academicObjectEditOperations,
   ArtifactCard,
   availableSelectionActions,
+  captionEditOperation,
   clearThreadReplyRetry,
   copyTextToClipboard,
   deriveThreadPreview,
   HighlightCard,
   limitUnicodeCodePoints,
   MarkdownContent,
+  moveObjectOperation,
   normalizeThreadPreview,
+  openReaderExternalLink,
   placeSelectionPopover,
   releaseLock,
   relativeSelectionGeometryKey,
@@ -17,6 +21,7 @@ import {
   retryRequestId,
   shouldSubmitComposerKey,
   shouldKeepPopoverPlacement,
+  safeReaderExternalUrl,
   summaryReviewRequestIdentity,
   threadAnnotationCandidate,
   threadReplyRetryRequestId,
@@ -174,6 +179,130 @@ describe("copyTextToClipboard", () => {
       (text) => { fallbackText = text; return true; },
     );
     expect(fallbackText).toBe("Fallback passage");
+  });
+});
+
+describe("academic object edit controls", () => {
+  const current = {
+    blockId: "figure-1",
+    altBlockId: "image-1",
+    altText: "Old description",
+    width: "auto" as const,
+    alignment: "center" as const,
+    enlargeable: false,
+    folded: false,
+  };
+
+  it("queues only changed alt-text and layout fields", () => {
+    expect(
+      academicObjectEditOperations(current, {
+        altText: "  New accessible description  ",
+        width: "full",
+        alignment: "right",
+        enlargeable: true,
+        folded: true,
+      }),
+    ).toEqual([
+      {
+        type: "set-alt-text",
+        blockId: "image-1",
+        text: "New accessible description",
+      },
+      {
+        type: "set-object-layout",
+        blockId: "figure-1",
+        width: "full",
+        alignment: "right",
+        enlargeable: true,
+        folded: true,
+      },
+    ]);
+    expect(
+      academicObjectEditOperations(current, {
+        altText: " Old description ",
+        width: "auto",
+        alignment: "center",
+        enlargeable: false,
+        folded: false,
+      }),
+    ).toEqual([]);
+  });
+
+  it("requires distinct source and destination blocks for moves", () => {
+    expect(moveObjectOperation("figure-1", "figure-1", "after")).toBeNull();
+    expect(moveObjectOperation("figure-1", "paragraph-2", "before")).toEqual({
+      type: "move-object",
+      blockId: "figure-1",
+      destinationBlockId: "paragraph-2",
+      position: "before",
+    });
+  });
+
+  it("keeps a structured caption body read-only while relabeling it", () => {
+    expect(
+      captionEditOperation(
+        {
+          blockId: "figure-1",
+          label: "Figure",
+          number: "1",
+          caption: "x response source",
+          structured: true,
+        },
+        {
+          label: " Diagram ",
+          number: " 7 ",
+          caption: "flattened replacement",
+        },
+      ),
+    ).toEqual({
+      type: "set-caption",
+      blockId: "figure-1",
+      label: "Diagram",
+      number: "7",
+      caption: "x response source",
+    });
+  });
+
+  it("allows plain caption body edits", () => {
+    expect(
+      captionEditOperation(
+        {
+          blockId: "figure-1",
+          label: "Figure",
+          number: "1",
+          caption: "Old body",
+          structured: false,
+        },
+        { label: "Figure", number: "2", caption: " Revised body " },
+      ),
+    ).toMatchObject({ number: "2", caption: "Revised body" });
+  });
+});
+
+describe("sandboxed Reader external links", () => {
+  it("allows only normalized HTTPS and mail links", () => {
+    expect(safeReaderExternalUrl("https://example.com/paper?q=1")).toBe(
+      "https://example.com/paper?q=1",
+    );
+    expect(safeReaderExternalUrl("mailto:reader@example.com?subject=Paper")).toBe(
+      "mailto:reader@example.com?subject=Paper",
+    );
+    expect(safeReaderExternalUrl("http://example.com")).toBeNull();
+    expect(safeReaderExternalUrl("javascript:alert(1)")).toBeNull();
+    expect(safeReaderExternalUrl("#references")).toBeNull();
+    expect(safeReaderExternalUrl("mailto:a@example.com?subject=x%0ABcc:y@example.com")).toBeNull();
+  });
+
+  it("opens validated links without an opener and ignores unsafe input", () => {
+    const calls: string[][] = [];
+    const opener = (url: string, target: string, features: string) => {
+      calls.push([url, target, features]);
+    };
+    expect(openReaderExternalLink("https://example.com/source", opener)).toBe(true);
+    expect(openReaderExternalLink("data:text/html,unsafe", opener)).toBe(false);
+    expect(calls).toEqual([
+      ["https://example.com/source", "_blank", "noopener,noreferrer"],
+    ]);
   });
 });
 

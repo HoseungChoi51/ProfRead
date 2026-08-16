@@ -4,7 +4,18 @@ export type Action = TaskAction;
 export interface RouteInput { action: Action; input: string; hasVisual: boolean; webEnabled: boolean; estimatedTokens: number; requiresImageGeneration?: boolean; modelOverride?: string; taskModelId?: string }
 export interface RouteDecision { profile: ModelProfile['name']; model: ModelDefinition; reason: string; eligible: ModelDefinition[] }
 
+const importAuditActions = new Set<Action>([
+  'import-triage',
+  'import-semantic-audit',
+  'import-visual-audit',
+  'import-adjudicate',
+  'import-verify-repair'
+]);
+
 export function deterministicProfile(input: RouteInput): ModelProfile['name'] | null {
+  if (input.action === 'import-triage') return 'quick';
+  if (input.action === 'import-semantic-audit' || input.action === 'import-verify-repair') return 'standard';
+  if (input.action === 'import-visual-audit' || input.action === 'import-adjudicate') return 'vision';
   if (input.action === 'document-write') return 'deep';
   if (input.action === 'review-summary') return 'digest';
   if (input.action === 'research' || input.webEnabled) return 'research';
@@ -21,7 +32,7 @@ export function deterministicProfile(input: RouteInput): ModelProfile['name'] | 
 
 function capable(model: ModelDefinition, input: RouteInput): boolean {
   const c=model.capabilities;
-  const structuredAction=input.action==='visualize'||input.action==='document-write'||input.action==='review-summary';
+  const structuredAction=input.action==='visualize'||input.action==='document-write'||input.action==='review-summary'||importAuditActions.has(input.action);
   return model.enabled && c.text && c.streaming && (!input.hasVisual || c.vision) && (!structuredAction || (c.structuredOutput&&c.functionTools)) && (input.action!=='visual-recap'||(c.structuredOutput&&c.imageGeneration)) && (!input.requiresImageGeneration||(c.imageGeneration&&model.protocol==='openai-responses')) && (!(input.action==='research'||input.webEnabled)||c.providerWebSearch) && model.contextWindow >= input.estimatedTokens + model.maxOutput;
 }
 
@@ -35,6 +46,7 @@ export function route(input: RouteInput, models: ModelDefinition[], profiles: Mo
 }
 
 export function toolsFor(input: Pick<RouteInput,'action'|'webEnabled'>): string[] {
+  if(importAuditActions.has(input.action))return ['report_import_findings'];
   if(input.action==='document-write')return ['propose_document_edits'];
   if(input.action==='review-summary')return ['review_summary'];
   if(input.action==='visualize')return ['render_diagram'];

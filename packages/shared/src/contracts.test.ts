@@ -1,5 +1,19 @@
 import{describe,expect,it}from'vitest';import{contextBundleSchema,diagramSpecSchema,documentEditOperationSchema,summaryBasisSchema,summaryFreshnessSchema,summaryReviewResultSchema,taskActionSchema,visualRecapSchema,writerEditOperationSchema,writerProposalResultSchema,writerProposalToolInputSchema,writerProposalToolName,writerSourceRefSchema}from'./index.js';
 describe('structured artifact contracts',()=>{it('rejects scriptable diagram IDs and unknown layouts',()=>{expect(()=>diagramSpecSchema.parse({version:1,title:'Bad',layout:'freeform',nodes:[],edges:[]})).toThrow();expect(()=>diagramSpecSchema.parse({version:1,title:'Bad',layout:'flow',nodes:[{id:'<script>',label:'x',sourceRefs:[]}],edges:[]})).toThrow()});it('caps visual recap sections at six',()=>{expect(()=>visualRecapSchema.parse({version:1,title:'x',thesis:'x',sections:Array.from({length:7},()=>({title:'x',summary:'x',sourceRefs:[]})),relationships:[],takeaways:[],openQuestions:[],sourceRefs:[]})).toThrow()});it('accepts only bounded integer image widths',()=>{expect(documentEditOperationSchema.parse({type:'resize-image',blockId:'image-1',width:640})).toMatchObject({width:640});expect(()=>documentEditOperationSchema.parse({type:'resize-image',blockId:'image-1',width:47})).toThrow();expect(()=>documentEditOperationSchema.parse({type:'resize-image',blockId:'image-1',width:640.5})).toThrow()})});
+
+describe('academic final-touch edit contracts',()=>{
+  it('accepts bounded semantic and object layout operations',()=>{
+    expect(documentEditOperationSchema.parse({type:'set-alt-text',blockId:'figure-1',text:'A labelled system diagram'})).toMatchObject({type:'set-alt-text'});
+    expect(documentEditOperationSchema.parse({type:'set-heading-level',blockId:'heading-1',level:3})).toMatchObject({level:3});
+    expect(documentEditOperationSchema.parse({type:'set-object-layout',blockId:'figure-1',width:'full',alignment:'center',enlargeable:true,folded:false})).toMatchObject({width:'full',alignment:'center'});
+    expect(documentEditOperationSchema.parse({type:'move-object',blockId:'figure-1',destinationBlockId:'paragraph-2',position:'after'})).toMatchObject({position:'after'});
+  });
+  it('rejects invalid academic layout values and unbounded alternative text',()=>{
+    expect(()=>documentEditOperationSchema.parse({type:'set-heading-level',blockId:'heading-1',level:7})).toThrow();
+    expect(()=>documentEditOperationSchema.parse({type:'set-object-layout',blockId:'figure-1',width:'120%',alignment:'middle',enlargeable:true,folded:false})).toThrow();
+    expect(()=>documentEditOperationSchema.parse({type:'set-alt-text',blockId:'figure-1',text:'x'.repeat(2001)})).toThrow();
+  });
+});
 describe('reader signal contracts',()=>{it('accepts polish-note and typed reader signals',()=>{expect(taskActionSchema.parse('polish-note')).toBe('polish-note');expect(contextBundleSchema.parse({tier:'brief',article:'Body',branch:[],readerSignals:[{id:'signal-1',kind:'comment',exactQuote:'Claim',note:'Needs a caveat'}],curatedNotes:['[READER COMMENT] "Claim" — Needs a caveat'],tokenEstimate:12}).readerSignals[0]).toMatchObject({kind:'comment',note:'Needs a caveat'})});it('rejects unknown reader signal kinds',()=>{expect(()=>contextBundleSchema.parse({tier:'brief',article:'Body',readerSignals:[{id:'signal-1',kind:'favorite',exactQuote:'Claim',note:null}],tokenEstimate:1})).toThrow()})});
 
 describe('document writer contracts',()=>{

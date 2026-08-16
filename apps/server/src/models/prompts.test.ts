@@ -50,6 +50,8 @@ describe('prompt templates', () => {
     expect(writerEnvelope).toContain('Improve clarity');expect(writerEnvelope).toContain('"b0"');expect(writerEnvelope).toContain('compact JSON tuples');
     const review=renderPrompt('summary-review.envelope',{articleText:'Current article',artifactKind:'tldr',existingSummary:'"Existing"',freshnessReasons:'reader-signals-changed',readerSignals:'[]',contract:contractForAction('review-summary')});
     expect(review).toContain('Complete current article');expect(review).toContain('Prefer KEEP');expect(review).toContain('replacement to null');expect(review).toContain('explanation; use null');
+    const importAudit=renderPrompt('import.semantic-audit',{visibleSourceText:'Source text',convertedText:'Converted text',evidenceRefsJson:'["b0"]',deterministicWarningsJson:'[]',contract:promptTemplate('contract.import-findings')});
+    expect(importAudit).toContain('Source text');expect(importAudit).toContain('Converted text');expect(importAudit).toContain('report_import_findings');
   });
 
   it('persists overrides and removes them when reset', () => {
@@ -91,10 +93,14 @@ describe('prompt settings API', () => {
     });
     expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'context.cache-generation')).toMatchObject({ category: 'Context', overridden: false });
     expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'request.polish-note')).toMatchObject({ category: 'Action requests', variables: ['draft'] });
+    expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'import.visual-audit')).toMatchObject({ category: 'Import review', variables: ['evidenceManifestJson','deterministicWarningsJson','contract'] });
     const modelSettings = await app.inject({ method: 'GET', url: '/api/settings/models', headers: { cookie } });
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'polish-note', modelId: 'gpt-5.6-luna' });
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'document-write', modelId: 'gpt-5.6-sol' });
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'review-summary', modelId: 'gpt-5.6-terra' });
+    expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'import-triage', modelId: 'gpt-5.6-luna' });
+    expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'import-semantic-audit', modelId: 'gpt-5.6-terra' });
+    expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'import-visual-audit', modelId: 'gpt-5.6-sol' });
     const saved = await app.inject({
       method: 'PUT',
       url: '/api/settings/prompts/contract.explain',

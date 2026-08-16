@@ -217,6 +217,7 @@ export function placeSelectionPopover(
 }
 type EditContext = {
   blockId: string;
+  altBlockId: string;
   kind: "text" | "heading" | "visual";
   tag: string;
   text: string;
@@ -225,9 +226,125 @@ type EditContext = {
   selectedText: string;
   formats: Record<"bold" | "italic" | "underline", boolean>;
   folded: boolean | null;
-  caption: { label: string; number: string; caption: string } | null;
+  caption: {
+    label: string;
+    number: string;
+    caption: string;
+    structured: boolean;
+  } | null;
+  altText: string;
+  objectLayout: {
+    width: "auto" | "content" | "full";
+    alignment: "left" | "center" | "right";
+    enlargeable: boolean;
+    folded: boolean;
+  } | null;
   rect: { top: number; left: number; width: number; height: number };
 };
+export type AcademicObjectEditState = {
+  blockId: string;
+  altBlockId: string;
+  altText: string;
+  width: "auto" | "content" | "full";
+  alignment: "left" | "center" | "right";
+  enlargeable: boolean;
+  folded: boolean;
+};
+export type CaptionEditState = {
+  blockId: string;
+  label: string;
+  number: string;
+  caption: string;
+  structured: boolean;
+};
+type MoveDraft = {
+  sourceBlockId: string;
+  sourceLabel: string;
+  destinationBlockId: string | null;
+  destinationLabel: string;
+};
+
+export function academicObjectEditOperations(
+  current: AcademicObjectEditState,
+  next: Omit<AcademicObjectEditState, "blockId" | "altBlockId">,
+): DocumentEditOperation[] {
+  const operations: DocumentEditOperation[] = [];
+  const altText = next.altText.trim();
+  if (altText !== current.altText.trim())
+    operations.push({
+      type: "set-alt-text",
+      blockId: current.altBlockId,
+      text: altText,
+    });
+  if (
+    next.width !== current.width ||
+    next.alignment !== current.alignment ||
+    next.enlargeable !== current.enlargeable ||
+    next.folded !== current.folded
+  )
+    operations.push({
+      type: "set-object-layout",
+      blockId: current.blockId,
+      width: next.width,
+      alignment: next.alignment,
+      enlargeable: next.enlargeable,
+      folded: next.folded,
+    });
+  return operations;
+}
+
+export function captionEditOperation(
+  current: CaptionEditState,
+  next: Pick<CaptionEditState, "label" | "number" | "caption">,
+): DocumentEditOperation {
+  return {
+    type: "set-caption",
+    blockId: current.blockId,
+    label: next.label.trim(),
+    number: next.number.trim(),
+    caption: current.structured ? current.caption : next.caption.trim(),
+  };
+}
+
+export function moveObjectOperation(
+  sourceBlockId: string,
+  destinationBlockId: string,
+  position: "before" | "after",
+): DocumentEditOperation | null {
+  if (!sourceBlockId || !destinationBlockId || sourceBlockId === destinationBlockId)
+    return null;
+  return {
+    type: "move-object",
+    blockId: sourceBlockId,
+    destinationBlockId,
+    position,
+  };
+}
+
+export function safeReaderExternalUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const href = value.trim();
+  if (/[\r\n]/.test(href) || /%0[ad]/i.test(href)) return null;
+  try {
+    const url = new URL(href);
+    return url.protocol === "https:" || url.protocol === "mailto:"
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function openReaderExternalLink(
+  value: unknown,
+  opener?: (url: string, target: string, features: string) => unknown,
+): boolean {
+  const url = safeReaderExternalUrl(value);
+  if (!url) return false;
+  const open = opener ?? ((href, target, features) => window.open(href, target, features));
+  open(url, "_blank", "noopener,noreferrer");
+  return true;
+}
 type EditRevision = {
   revision: number;
   summary: Record<string, number>;
@@ -563,6 +680,8 @@ export function Reader({
     [editHistory, setEditHistory] = useState<EditHistory | null>(null),
     [editContext, setEditContext] = useState<EditContext | null>(null),
     [captionDraft, setCaptionDraft] = useState<EditContext | null>(null),
+    [objectDraft, setObjectDraft] = useState<EditContext | null>(null),
+    [moveDraft, setMoveDraft] = useState<MoveDraft | null>(null),
     [historyOpen, setHistoryOpen] = useState(false),
     [savingEdits, setSavingEdits] = useState(false),
     [contentEpoch, setContentEpoch] = useState(0),
@@ -721,6 +840,50 @@ export function Reader({
         event.data?.source !== "afterdraft"
       )
         return;
+      if (event.data.type === "open-external-link") {
+        if (!openReaderExternalLink(event.data.href))
+          setError("The article tried to open an unsupported link.");
+        return;
+      }
+      if (event.data.type === "move-cancelled") {
+        setMoveDraft(null);
+        return;
+      }
+      if (event.data.type === "move-destination-invalid") {
+        setError("Choose a destination outside the object being moved.");
+        return;
+      }
+      if (event.data.type === "edit-preview-error") {
+        setError(
+          typeof event.data.message === "string"
+            ? event.data.message
+            : "This edit cannot be previewed safely.",
+        );
+        return;
+      }
+      if (event.data.type === "move-destination") {
+        const destinationBlockId =
+          typeof event.data.blockId === "string" ? event.data.blockId : "";
+        if (destinationBlockId && destinationBlockId === moveDraft?.sourceBlockId) {
+          setError("Choose a different destination block for this object.");
+          return;
+        }
+        setMoveDraft((current) => {
+          if (!current || !destinationBlockId) return current;
+          const destinationLabel =
+            typeof event.data.text === "string" && event.data.text.trim()
+              ? event.data.text.trim().slice(0, 80)
+              : typeof event.data.tag === "string"
+                ? event.data.tag.slice(0, 24)
+                : "document block";
+          iframe.current?.contentWindow?.postMessage(
+            { type: "set-move-destination", blockId: destinationBlockId },
+            "*",
+          );
+          return { ...current, destinationBlockId, destinationLabel };
+        });
+        return;
+      }
       if (event.data.type === "selection") {
         const frame = iframe.current?.getBoundingClientRect();
         setSelection({
@@ -819,6 +982,11 @@ export function Reader({
             { type: "enter-edit-mode" },
             "*",
           );
+          if (moveDraft)
+            iframe.current?.contentWindow?.postMessage(
+              { type: "enter-move-mode", blockId: moveDraft.sourceBlockId },
+              "*",
+            );
           iframe.current?.contentWindow?.postMessage(
             { type: "restore-progress", ratio: scrollRatio.current },
             "*",
@@ -870,7 +1038,7 @@ export function Reader({
     };
     addEventListener("message", receive);
     return () => removeEventListener("message", receive);
-  }, [threads, highlights, anchorPayloads, doc?.offset_ratio, editMode, selection]);
+  }, [threads, highlights, anchorPayloads, doc?.offset_ratio, editMode, selection, moveDraft]);
   useEffect(() => {
     localStorage.setItem("afterdraft-sidebar-width", String(sidebarWidth));
   }, [sidebarWidth]);
@@ -2118,15 +2286,52 @@ export function Reader({
     doc?.version_id,
     modelOverride,
   ]);
-  function queueEdit(operation: DocumentEditOperation) {
-    const next = [...pendingEditsRef.current, operation];
+  function queueEdits(operations: DocumentEditOperation[]) {
+    if (!operations.length) return;
+    const next = [...pendingEditsRef.current, ...operations];
     pendingEditsRef.current = next;
     setPendingEdits(next);
+    for (const operation of operations)
+      iframe.current?.contentWindow?.postMessage(
+        { type: "apply-edit-operation", operation },
+        "*",
+      );
+    setEditContext(null);
+  }
+  function queueEdit(operation: DocumentEditOperation) {
+    queueEdits([operation]);
+  }
+  function cancelMove() {
+    iframe.current?.contentWindow?.postMessage({ type: "exit-move-mode" }, "*");
+    setMoveDraft(null);
+  }
+  function beginMove(context: EditContext) {
+    const label = context.text.trim() || context.tag;
+    setMoveDraft({
+      sourceBlockId: context.blockId,
+      sourceLabel: label.slice(0, 80),
+      destinationBlockId: null,
+      destinationLabel: "",
+    });
+    setEditContext(null);
     iframe.current?.contentWindow?.postMessage(
-      { type: "apply-edit-operation", operation },
+      { type: "enter-move-mode", blockId: context.blockId },
       "*",
     );
-    setEditContext(null);
+  }
+  function finishMove(position: "before" | "after") {
+    if (!moveDraft?.destinationBlockId) return;
+    const operation = moveObjectOperation(
+      moveDraft.sourceBlockId,
+      moveDraft.destinationBlockId,
+      position,
+    );
+    if (!operation) {
+      setError("Choose a different destination block for this object.");
+      return;
+    }
+    queueEdit(operation);
+    cancelMove();
   }
   function finishInlineEditing(): Promise<void> {
     const requestId = crypto.randomUUID();
@@ -2152,6 +2357,8 @@ export function Reader({
       pendingEditsRef.current = [];
       setPendingEdits([]);
       setSelection(null);
+      setObjectDraft(null);
+      cancelMove();
       if (window.matchMedia("(min-width: 901px)").matches) setDrawer(true);
       setEditMode(true);
       iframe.current?.contentWindow?.postMessage(
@@ -2173,6 +2380,8 @@ export function Reader({
     setPendingEdits([]);
     setEditContext(null);
     setCaptionDraft(null);
+    setObjectDraft(null);
+    cancelMove();
     setEditMode(false);
     setContentEpoch((value) => value + 1);
   }
@@ -2218,6 +2427,8 @@ export function Reader({
       ]);
       setEditMode(stayInEditMode);
       setEditContext(null);
+      setObjectDraft(null);
+      cancelMove();
       setContentEpoch((value) => value + 1);
       return true;
     } catch (e) {
@@ -2500,21 +2711,47 @@ export function Reader({
       </header>
       {editMode && (
         <div className="edit-session-bar" role="status">
-          <span>
-            Edit mode · Click text to edit · Click an image, then drag its corner · Right-click for formatting and captions ·{" "}
-            <b>{pendingEdits.length}</b> pending change
-            {pendingEdits.length === 1 ? "" : "s"}
-          </span>
-          <button className="quiet" onClick={() => leaveEditMode()}>
-            Cancel
-          </button>
-          <button
-            className="primary"
-            disabled={savingEdits}
-            onClick={() => void saveEditSession()}
-          >
-            {savingEdits ? "Saving…" : "Save changes"}
-          </button>
+          {moveDraft ? (
+            <>
+              <span className="move-placement-copy">
+                <b>Move {moveDraft.sourceLabel}</b> ·{" "}
+                {moveDraft.destinationBlockId
+                  ? `Place relative to ${moveDraft.destinationLabel}`
+                  : "Click a destination block in the article"}
+              </span>
+              {moveDraft.destinationBlockId && (
+                <>
+                  <button className="primary" onClick={() => finishMove("before")}>
+                    Place before
+                  </button>
+                  <button className="primary" onClick={() => finishMove("after")}>
+                    Place after
+                  </button>
+                </>
+              )}
+              <button className="quiet" onClick={cancelMove}>
+                Cancel move
+              </button>
+            </>
+          ) : (
+            <>
+              <span>
+                Edit mode · Click text to edit · Select an object for sizing, accessibility, captions, or moving ·{" "}
+                <b>{pendingEdits.length}</b> pending change
+                {pendingEdits.length === 1 ? "" : "s"}
+              </span>
+              <button className="quiet" onClick={() => leaveEditMode()}>
+                Cancel
+              </button>
+              <button
+                className="primary"
+                disabled={savingEdits}
+                onClick={() => void saveEditSession()}
+              >
+                {savingEdits ? "Saving…" : "Save changes"}
+              </button>
+            </>
+          )}
         </div>
       )}
       {error && (
@@ -3038,7 +3275,7 @@ export function Reader({
           aria-label="HTML edit actions"
           onClick={(event) => event.stopPropagation()}
           style={{
-            top: Math.min(innerHeight - 260, Math.max(72, editContext.rect.top)),
+            top: Math.min(innerHeight - 420, Math.max(72, editContext.rect.top)),
             left: Math.min(
               innerWidth - 220,
               Math.max(8, editContext.rect.left),
@@ -3073,33 +3310,151 @@ export function Reader({
             </>
           )}
           {editContext.kind === "heading" && (
-            <button
-              role="menuitem"
-              onClick={() =>
-                queueEdit({
-                  type: "fold-section",
-                  blockId: editContext.blockId,
-                  folded: editContext.folded !== true,
-                })
-              }
-            >
-              {editContext.folded ? "Unfold section" : "Fold section"}
-            </button>
+            <>
+              <label className="edit-menu-field">
+                Heading level
+                <select
+                  value={Number(editContext.tag.slice(1)) || 2}
+                  onChange={(event) =>
+                    queueEdit({
+                      type: "set-heading-level",
+                      blockId: editContext.blockId,
+                      level: Number(event.target.value),
+                    })
+                  }
+                >
+                  {[1, 2, 3, 4, 5, 6].map((level) => (
+                    <option key={level} value={level}>H{level}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                role="menuitem"
+                onClick={() =>
+                  queueEdit({
+                    type: "fold-section",
+                    blockId: editContext.blockId,
+                    folded: editContext.folded !== true,
+                  })
+                }
+              >
+                {editContext.folded ? "Unfold section" : "Fold section"}
+              </button>
+            </>
           )}
           {editContext.kind === "visual" && (
-            <button
-              role="menuitem"
-              onClick={() => {
-                setCaptionDraft(editContext);
-                setEditContext(null);
-              }}
-            >
-              Edit caption and number…
-            </button>
+            <>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setObjectDraft(editContext);
+                  setEditContext(null);
+                }}
+              >
+                Size, alignment, and alt text…
+              </button>
+              {editContext.tag !== "math" && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setCaptionDraft(editContext);
+                    setEditContext(null);
+                  }}
+                >
+                  Edit caption and number…
+                </button>
+              )}
+              <button role="menuitem" onClick={() => beginMove(editContext)}>
+                Move object…
+              </button>
+            </>
           )}
           <button role="menuitem" onClick={() => setEditContext(null)}>
             Close
           </button>
+        </div>
+      )}
+      {objectDraft && objectDraft.objectLayout && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) =>
+            event.target === event.currentTarget && setObjectDraft(null)
+          }
+        >
+          <form
+            className="edit-dialog object-edit-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="object-edit-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const values = new FormData(event.currentTarget),
+                current: AcademicObjectEditState = {
+                  blockId: objectDraft.blockId,
+                  altBlockId: objectDraft.altBlockId,
+                  altText: objectDraft.altText,
+                  ...objectDraft.objectLayout!,
+                },
+                operations = academicObjectEditOperations(current, {
+                  altText: String(values.get("altText") ?? ""),
+                  width: String(values.get("width")) as AcademicObjectEditState["width"],
+                  alignment: String(values.get("alignment")) as AcademicObjectEditState["alignment"],
+                  enlargeable: values.has("enlargeable"),
+                  folded: values.has("folded"),
+                });
+              queueEdits(operations);
+              setObjectDraft(null);
+            }}
+          >
+            <header>
+              <div>
+                <span className="eyebrow">Academic object</span>
+                <h2 id="object-edit-dialog-title">Object properties</h2>
+              </div>
+              <button type="button" className="quiet" onClick={() => setObjectDraft(null)}>×</button>
+            </header>
+            <label>
+              Alternative text
+              <textarea
+                name="altText"
+                maxLength={2000}
+                defaultValue={objectDraft.altText}
+                placeholder="Describe the object’s informative content for readers who cannot see it."
+                autoFocus
+              />
+            </label>
+            <div className="object-layout-fields">
+              <label>
+                Width
+                <select name="width" defaultValue={objectDraft.objectLayout.width}>
+                  <option value="auto">Natural</option>
+                  <option value="content">Content width</option>
+                  <option value="full">Full width</option>
+                </select>
+              </label>
+              <label>
+                Alignment
+                <select name="alignment" defaultValue={objectDraft.objectLayout.alignment}>
+                  <option value="left">Left</option>
+                  <option value="center">Center</option>
+                  <option value="right">Right</option>
+                </select>
+              </label>
+            </div>
+            <label className="edit-check-row">
+              <input type="checkbox" name="enlargeable" defaultChecked={objectDraft.objectLayout.enlargeable}/>
+              Allow click-to-enlarge
+            </label>
+            <label className="edit-check-row">
+              <input type="checkbox" name="folded" defaultChecked={objectDraft.objectLayout.folded}/>
+              Start folded behind a disclosure
+            </label>
+            <footer>
+              <button type="button" onClick={() => setObjectDraft(null)}>Cancel</button>
+              <button className="primary">Apply to draft</button>
+            </footer>
+          </form>
         </div>
       )}
       {captionDraft && (
@@ -3111,14 +3466,23 @@ export function Reader({
             aria-labelledby="caption-dialog-title"
             onSubmit={(event) => {
               event.preventDefault();
-              const values = new FormData(event.currentTarget);
-              queueEdit({
-                type: "set-caption",
-                blockId: captionDraft.blockId,
-                label: String(values.get("label") ?? "").trim(),
-                number: String(values.get("number") ?? "").trim(),
-                caption: String(values.get("caption") ?? "").trim(),
-              });
+              const values = new FormData(event.currentTarget),
+                current = captionDraft.caption ?? {
+                  label: "",
+                  number: "",
+                  caption: "",
+                  structured: false,
+                };
+              queueEdit(
+                captionEditOperation(
+                  { blockId: captionDraft.blockId, ...current },
+                  {
+                    label: String(values.get("label") ?? ""),
+                    number: String(values.get("number") ?? ""),
+                    caption: String(values.get("caption") ?? ""),
+                  },
+                ),
+              );
               setCaptionDraft(null);
             }}
           >
@@ -3163,9 +3527,23 @@ export function Reader({
                 maxLength={2000}
                 defaultValue={captionDraft.caption?.caption ?? ""}
                 placeholder="Memory topology"
+                readOnly={captionDraft.caption?.structured === true}
+                aria-describedby={
+                  captionDraft.caption?.structured
+                    ? "structured-caption-help"
+                    : undefined
+                }
               />
             </label>
-            <p>Clear all three fields to remove a caption added by AfterDraft.</p>
+            {captionDraft.caption?.structured ? (
+              <p id="structured-caption-help">
+                This caption body contains equations, links, or formatting. Its
+                rich content is preserved here; only the label and number can be
+                changed.
+              </p>
+            ) : (
+              <p>Clear all three fields to remove a caption added by AfterDraft.</p>
+            )}
             <footer>
               <button type="button" onClick={() => setCaptionDraft(null)}>
                 Cancel

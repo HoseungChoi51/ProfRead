@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { db, row, rows } from '../db/index.js';
 import { promptTemplateSettings, resetPromptTemplate, savePromptTemplate } from './prompts.js';
 import { behaviorSettingsResponse, resetContextBehaviorSettings, saveContextBehaviorSettings } from './behavior.js';
+import { academicImportSettingsResponse, resetAcademicImportSettings, saveAcademicImportSettings } from './academic-settings.js';
 
 const gpt56Capabilities={text:true,vision:true,structuredOutput:true,functionTools:true,providerWebSearch:true,reasoningControl:true,imageGeneration:true,streaming:true};
 const defaultProfiles:Record<ModelProfile['name'],string[]>= {
@@ -26,6 +27,9 @@ const defaultTaskModels:Record<TaskAction,string>={
   visualize:'gpt-5.6-sol', research:'gpt-5.6-sol', summarize:'gpt-5.6-terra', tldr:'gpt-5.6-luna',
   'half-page':'gpt-5.6-terra', 'visual-recap':'gpt-5.6-sol', compact:'gpt-5.6-luna',
   'document-write':'gpt-5.6-sol', 'review-summary':'gpt-5.6-terra',
+  'import-triage':'gpt-5.6-luna', 'import-semantic-audit':'gpt-5.6-terra',
+  'import-visual-audit':'gpt-5.6-sol', 'import-adjudicate':'gpt-5.6-sol',
+  'import-verify-repair':'gpt-5.6-terra',
 };
 
 export function seedModelSettings():void {
@@ -89,6 +93,15 @@ export function registerSettingsRoutes(app:FastifyInstance):void {
     }
   });
   app.delete('/api/settings/behavior', async () => resetContextBehaviorSettings());
+  app.get('/api/settings/academic-import', async () => academicImportSettingsResponse());
+  app.put('/api/settings/academic-import', async (request, reply) => {
+    try { return saveAcademicImportSettings(request.body); }
+    catch (error) {
+      if (error instanceof z.ZodError) return reply.code(400).send({ error: error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join(' ') });
+      throw error;
+    }
+  });
+  app.delete('/api/settings/academic-import', async () => resetAcademicImportSettings());
   app.get('/api/settings/providers/:id/catalog',async(request,reply)=>{const setting=providerSetting((request.params as {id:string}).id);if(!setting||setting.protocol!=='openrouter')return reply.code(422).send({error:'Catalog discovery is available for OpenRouter providers'});const key=process.env[setting.secret_env_name];if(!key)return reply.code(422).send({error:`Server secret ${setting.secret_env_name} is not configured`});const response=await fetch(`${setting.base_url}/models`,{headers:{authorization:`Bearer ${key}`}});if(!response.ok)return reply.code(502).send({error:`Catalog returned ${response.status}`});const result=await response.json() as {data?:Array<{id:string;name?:string;context_length?:number;architecture?:unknown;pricing?:unknown}>};return(result.data??[]).map(model=>({id:model.id,label:model.name??model.id,contextWindow:model.context_length??0,architecture:model.architecture,pricing:model.pricing}));});
 }
 export function providerSetting(providerId:string){return row<{protocol:string;base_url:string;secret_env_name:string;config_json:string;enabled:number}>('SELECT protocol,base_url,secret_env_name,config_json,enabled FROM model_settings WHERE provider_id=?',providerId);}

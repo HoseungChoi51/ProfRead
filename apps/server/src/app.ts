@@ -17,17 +17,22 @@ import { registerExportRoutes } from './routes/exports.js';
 import { registerEditRoutes } from './routes/edits.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import { registerWriterRoutes } from './routes/writer.js';
+import { registerImportJobRoutes } from './routes/import-jobs.js';
+import { startAcademicImportRunner } from './academic/runner.js';
+import { installAcademicReviewHook } from './academic/review.js';
+import { installArxivSourceHook } from './academic/arxiv-source.js';
 
 export async function buildApp() {
   const app=Fastify({logger:true,bodyLimit:config.limits.zipBytes+1024});
   await app.register(cookie,{secret:config.sessionSecret});
   await app.register(cors,{origin:false,credentials:true});
   await app.register(rateLimit,{global:false});
-  await app.register(multipart,{limits:{files:1,fileSize:config.limits.zipBytes}});
+  await app.register(multipart,{limits:{files:2,fileSize:config.limits.zipBytes}});
   app.addHook('onSend',async(_request,reply,payload)=>{reply.header('x-content-type-options','nosniff').header('permissions-policy','camera=(), microphone=(), geolocation=()').header('x-frame-options','SAMEORIGIN');if(!reply.hasHeader('referrer-policy'))reply.header('referrer-policy','no-referrer');if(!reply.hasHeader('content-security-policy'))reply.header('content-security-policy',"default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'");return payload;});
   registerAuth(app);
   app.addHook('preHandler',async(request,reply)=>{if(!request.url.startsWith('/api/')||request.url==='/api/auth/login')return;await authenticate(request,reply);if(!reply.sent)await requireCsrf(request,reply);});
-  seedModelSettings();registerDocumentRoutes(app);registerLibraryRoutes(app);registerThreadRoutes(app);registerWriterRoutes(app);registerRunRoutes(app);registerSettingsRoutes(app);registerKnowledgeRoutes(app);registerExportRoutes(app);registerEditRoutes(app);
+  seedModelSettings();registerDocumentRoutes(app);registerImportJobRoutes(app);registerLibraryRoutes(app);registerThreadRoutes(app);registerWriterRoutes(app);registerRunRoutes(app);registerSettingsRoutes(app);registerKnowledgeRoutes(app);registerExportRoutes(app);registerEditRoutes(app);
+  installArxivSourceHook();installAcademicReviewHook();startAcademicImportRunner();
   app.get('/health',async()=>({status:'ok'}));
   if(existsSync(join(config.webDir,'index.html'))){await app.register(staticFiles,{root:config.webDir,prefix:'/',wildcard:false});app.setNotFoundHandler(async(request,reply)=>request.url.startsWith('/api/')?reply.code(404).send({error:'Not found'}):reply.type('text/html').sendFile('index.html'));}
   app.setErrorHandler((error:Error & {statusCode?:number},request,reply)=>{request.log.error(error);if(!reply.sent)reply.code(error.statusCode??500).send({error:error.statusCode&&error.statusCode<500?error.message:'Internal server error'});});

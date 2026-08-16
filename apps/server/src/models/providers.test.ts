@@ -3,6 +3,20 @@ const model:ModelDefinition={id:'mock',providerId:'mock',label:'Mock',protocol:'
 const response=(chunks:string[])=>new Response(new ReadableStream({start(controller){for(const chunk of chunks)controller.enqueue(new TextEncoder().encode(chunk));controller.close()}}),{status:200});
 afterEach(()=>vi.unstubAllGlobals());describe('provider event normalization',()=>{it('normalizes Responses text, usage, and completion',async()=>{vi.stubGlobal('fetch',vi.fn(async()=>response(['event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi"}\n\n','data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}\n\n'])));const events=[];for await(const event of new ResponsesProvider('secret',[model]).run({model,messages:[{role:'user',content:'hello'}]}))events.push(event);expect(events).toContainEqual({type:'text_delta',delta:'Hi'});expect(events).toContainEqual({type:'usage',inputTokens:3,outputTokens:1})});it('extracts image data from a Responses image tool call',async()=>{vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({output:[{type:'image_generation_call',result:'aW1hZ2U='}]}),{status:200})));await expect(generateImageWithResponses('secret','mock','draw it')).resolves.toBe('aW1hZ2U=')});it('normalizes OpenRouter citations and chat deltas',async()=>{vi.stubGlobal('fetch',vi.fn(async()=>response(['data: {"choices":[{"delta":{"content":"Answer"}}],"citations":[{"title":"Source","url":"https://example.test"}]}\n\n','data: [DONE]\n\n'])));const events=[];for await(const event of new ChatCompletionsProvider('secret',[{...model,protocol:'openrouter'}],'https://mock',true).run({model:{...model,protocol:'openrouter'},messages:[{role:'user',content:'hello'}]}))events.push(event);expect(events.some(e=>e.type==='citation')).toBe(true);expect(events).toContainEqual({type:'text_delta',delta:'Answer'})});});
 
+describe('multi-image evidence',()=>{
+  it('sends ordered labeled Responses images with explicit detail and disabled storage',async()=>{
+    let body:any;vi.stubGlobal('fetch',vi.fn(async(_url:unknown,init?:RequestInit)=>{body=JSON.parse(String(init?.body));return response(['data: {"type":"response.completed","response":{"status":"completed"}}\n\n'])}));
+    for await(const event of new ResponsesProvider('secret',[model]).run({model,messages:[{role:'user',content:'audit'}],images:[{id:'crop-1',mimeType:'image/png',data:'YWJj',detail:'high'},{id:'eq-2',mimeType:'image/webp',data:'ZGVm',detail:'original'}],store:false})){void event}
+    expect(body.store).toBe(false);expect(body.input[0].content).toEqual([
+      {type:'input_text',text:'audit'},
+      {type:'input_text',text:'Evidence image crop-1:'},
+      {type:'input_image',image_url:'data:image/png;base64,YWJj',detail:'high'},
+      {type:'input_text',text:'Evidence image eq-2:'},
+      {type:'input_image',image_url:'data:image/webp;base64,ZGVm',detail:'original'},
+    ]);
+  });
+});
+
 describe('forced internal function tools',()=>{
   const tool={name:'propose_document_edits',schema:{type:'object',properties:{version:{const:1}},required:['version'],additionalProperties:false}};
   it('sends and forces an arbitrary function tool through Responses',async()=>{

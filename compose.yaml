@@ -8,6 +8,10 @@ services:
       AFTERDRAFT_SESSION_SECRET: ${AFTERDRAFT_SESSION_SECRET:?set AFTERDRAFT_SESSION_SECRET}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ACADEMIC_WORKER_URL: http://academic-worker:4312
+    depends_on:
+      academic-worker:
+        condition: service_healthy
     volumes:
       - afterdraft-data:/data
     ports:
@@ -18,6 +22,44 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    networks:
+      - default
+      - academic-worker
+  academic-worker:
+    build:
+      context: .
+      dockerfile: apps/academic-worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=3g,mode=1777
+    expose:
+      - "4312"
+    environment:
+      ACADEMIC_WORKER_PORT: "4312"
+      ACADEMIC_WORKER_CONCURRENCY: "2"
+      ACADEMIC_WORKER_MAX_BODY_BYTES: "104857600"
+      ACADEMIC_WORKER_MAX_OUTPUT_BYTES: "230686720"
+    networks:
+      - academic-worker
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 4.0
+    mem_limit: 6g
+    pids_limit: 512
+    shm_size: 1g
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 volumes:
   afterdraft-data:
     name: afterdraft-data
+networks:
+  academic-worker:
+    internal: true

@@ -4,10 +4,12 @@ COPY package.json package-lock.json tsconfig.base.json eslint.config.js ./
 COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
 COPY apps/server/package.json apps/server/tsconfig.json ./apps/server/
 COPY apps/web/package.json apps/web/tsconfig.json apps/web/tsconfig.app.json apps/web/vite.config.ts apps/web/index.html ./apps/web/
+COPY apps/academic-worker/package.json apps/academic-worker/tsconfig.json ./apps/academic-worker/
 RUN npm ci
 COPY packages/shared/src ./packages/shared/src
 COPY apps/server/src ./apps/server/src
 COPY apps/web/src ./apps/web/src
+COPY apps/academic-worker/src ./apps/academic-worker/src
 RUN npm run build
 RUN npm prune --omit=dev
 

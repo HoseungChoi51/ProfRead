@@ -1,0 +1,107 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { basename, extname, join, resolve, sep } from 'node:path';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { FastifyInstance } from 'fastify';
+import { nanoid } from 'nanoid';
+import { z } from 'zod';
+import { config } from '../config.js';
+import { db, now, row, rows } from '../db/index.js';
+import { sanitizeStylesheet } from '../ingest/sanitize.js';
+import { academicImportSettings } from '../models/academic-settings.js';
+import { stagedResultSchema } from '../academic/persistence.js';
+import { decideAcademicImportFinding } from '../academic/repairs.js';
+import { inspectUploadedArchive } from '../academic/source-archive.js';
+
+type SourceKind='html'|'docx'|'tex'|'tex-zip'|'arxiv';
+type JobRow=Record<string,unknown>&{id:string;status:string;source_kind:SourceKind;source_name:string;stage:string;progress:number;warnings_json:string;stages_json:string;entry_choices_json:string;result_json:string|null;provenance_json:string;ai_review_enabled:number;max_calls:number;review_concurrency:number;auto_apply:number;source_reference:number;call_count:number;qa_status:string;created_at:string;updated_at:string;completed_at:string|null;document_id:string|null;document_version_id:string|null;error:string|null};
+type Lifecycle={
+  enqueue:(jobId:string)=>void;
+  cancel?:(jobId:string)=>void;
+  finalize?:(jobId:string)=>Promise<unknown>;
+};
+let lifecycle:Lifecycle|undefined;
+
+export function registerImportJobLifecycle(value:Lifecycle):void{lifecycle=value}
+
+function json<T>(value:string|null|undefined,fallback:T):T{if(!value)return fallback;try{return JSON.parse(value) as T}catch{return fallback}}
+function findings(jobId:string){return rows<any>('SELECT f.*,r.model_id FROM import_findings f LEFT JOIN model_runs r ON r.id=f.model_run_id WHERE f.import_job_id=? ORDER BY f.created_at,f.id',jobId).map(item=>({id:item.id,source:item.source,issueCode:item.issue_code,severity:item.severity,title:item.title,description:item.description,targetRef:item.target_ref,blockId:item.target_ref,evidence:json(item.evidence_json,[]),repair:json(item.repair_json,null),confidence:item.confidence,corroborated:Boolean(item.corroborated),decision:item.decision,modelRunId:item.model_run_id,modelId:item.model_id,appliedAt:item.applied_at,createdAt:item.created_at,updatedAt:item.updated_at}))}
+function publicResult(value:string|null){if(!value)return null;try{const result=stagedResultSchema.parse(JSON.parse(value));return{entryPath:result.entryPath,derivativeHash:result.derivativeHash,manifest:result.manifest,assets:result.assets.map(({id,sourcePath,mimeType,bytes,sha256})=>({id,sourcePath,mimeType,bytes,sha256}))}}catch{return null}}
+function response(item:JobRow,includeFindings=false){
+  const findingItems=includeFindings?findings(item.id):[],findingCount=includeFindings?findingItems.length:row<{finding_count:number}>('SELECT COUNT(*) finding_count FROM import_findings WHERE import_job_id=?',item.id)?.finding_count??0,warningItems=json<unknown[]>(item.warnings_json,[]),provenance=json<Record<string,unknown>>(item.provenance_json,{}),terminal=['review-ready','published','failed','cancelled'].includes(item.status),publicStage=terminal?item.status:item.stage==='model-review'?'ai-review':item.stage==='deterministic-review'?'validating':item.stage;
+  const qaCoverage=provenance.qaCoverage??null;
+  return{id:item.id,jobId:item.id,sourceKind:item.source_kind,sourceName:item.source_name,status:item.status,stage:publicStage,currentStage:item.stage,progress:item.progress<=1?Math.round(item.progress*100):item.progress,
+    stages:json(item.stages_json,[]),warnings:warningItems,warningCount:warningItems.length,entryChoices:json(item.entry_choices_json,[]),
+    result:publicResult(item.result_json),provenance,coverage:qaCoverage,qaCoverage,previewUrl:['review-ready','published'].includes(item.status)?`/api/import-jobs/${item.id}/preview`:null,
+    aiReview:{enabled:Boolean(item.ai_review_enabled),maxCalls:item.max_calls,concurrency:item.review_concurrency,autoApply:Boolean(item.auto_apply),sourceReference:Boolean(item.source_reference)},
+    callsUsed:item.call_count,maxCalls:item.max_calls,findingCount,qaStatus:item.qa_status,documentId:item.document_id,documentVersionId:item.document_version_id,error:item.error,message:item.error,
+    createdAt:item.created_at,updatedAt:item.updated_at,completedAt:item.completed_at,...(includeFindings?{findings:findingItems}:{})};
+}
+function job(id:string){return row<JobRow>('SELECT * FROM import_jobs WHERE id=?',id)}
+function cleanName(value:string):string{return basename(value).replace(/[^A-Za-z0-9._ ()[\]-]/g,'_').slice(0,240)||'source'}
+const evidenceIndexSchema=z.array(z.object({id:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),relativePath:z.string().min(1).max(500),mimeType:z.enum(['image/png','image/jpeg','image/webp'])}).passthrough());
+function validEvidenceImage(mimeType:'image/png'|'image/jpeg'|'image/webp',content:Buffer):boolean{
+  if(mimeType==='image/png')return content.length>=8&&content.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
+  if(mimeType==='image/jpeg')return content.length>=2&&content[0]===0xff&&content[1]===0xd8;
+  return content.length>=12&&content.subarray(0,4).toString('ascii')==='RIFF'&&content.subarray(8,12).toString('ascii')==='WEBP';
+}
+async function clearRetryArtifacts(id:string):Promise<void>{
+  if(!/^[A-Za-z0-9_-]+$/.test(id))throw new Error('Stored import job identifier is invalid');
+  const root=join(config.dataDir,'imports',id),entries=await readdir(root,{withFileTypes:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return[];throw error});
+  for(const entry of entries)if(entry.isDirectory()&&!entry.isSymbolicLink()&&/^bundle-[A-Za-z0-9_-]+$/.test(entry.name))await rm(join(root,entry.name),{recursive:true,force:true});
+  await rm(join(root,'evidence'),{recursive:true,force:true});await rm(join(root,'preview.html'),{force:true});
+}
+
+export function registerImportJobRoutes(app:FastifyInstance):void{
+  app.post('/api/import-jobs',async(request,reply)=>{
+    const id=nanoid(),directory=join(config.dataDir,'imports',id),fields:Record<string,string>={};
+    let source:{path:string;name:string;mime:string;hash:string}|undefined,companionPath:string|undefined;
+    await mkdir(directory,{recursive:true,mode:0o700});
+    try{
+      for await(const part of request.parts({limits:{files:2,fileSize:config.limits.zipBytes,fields:12,parts:14}})){
+        if(part.type==='field'){fields[part.fieldname]=String(part.value??'');continue}
+        const isCompanion=part.fieldname==='companionPdf';
+        if(part.fieldname!=='file'&&part.fieldname!=='source'&&!isCompanion)throw new Error(`Unexpected upload field: ${part.fieldname}`);
+        if(isCompanion&&companionPath)throw new Error('Only one companion PDF is allowed');
+        if(!isCompanion&&source)throw new Error('Only one source file is allowed');
+        const name=cleanName(part.filename),extension=extname(name).toLowerCase(),path=join(directory,isCompanion?'companion.pdf':`source${extension}`),hash=createHash('sha256');
+        const meter=new Transform({transform(chunk,_encoding,callback){hash.update(chunk);callback(null,chunk)}});
+        await pipeline(part.file,meter,createWriteStream(path,{flags:'wx',mode:0o600}));
+        if(part.file.truncated)throw new Error('Upload exceeds the 100 MB limit');
+        if(isCompanion){if(extension!=='.pdf'&&part.mimetype!=='application/pdf')throw new Error('Companion file must be a PDF');const handle=await open(path,'r');try{const magic=Buffer.alloc(5);await handle.read(magic,0,5,0);if(magic.toString()!=='%PDF-')throw new Error('Companion file is not a valid PDF')}finally{await handle.close()}companionPath=path}
+        else source={path,name,mime:part.mimetype,hash:hash.digest('hex')};
+      }
+      if(!source&&(fields.sourceKind==='arxiv'||fields.arxiv)){const reference=(fields.arxiv||fields.sourceRef||'').trim();if(!reference)throw new Error('An arXiv ID or URL is required');const path=join(directory,'source.arxiv'),bytes=Buffer.from(reference);await writeFile(path,bytes,{mode:0o600,flag:'wx'});source={path,name:reference,mime:'text/plain',hash:createHash('sha256').update(bytes).digest('hex')}}
+      if(!source)throw new Error('Source file is required');
+      const inferred:SourceKind=fields.sourceKind==='arxiv'?'arxiv':/\.docx$/i.test(source.name)?'docx':/\.html?$/i.test(source.name)?'html':/\.tex$/i.test(source.name)?'tex':/\.zip$/i.test(source.name)?(await inspectUploadedArchive(source.path)).kind:(()=>{throw new Error('Only DOCX, HTML, TeX, TeX ZIP, and arXiv sources are supported')})();
+      const sourceKind=(fields.sourceKind&&fields.sourceKind!=='upload'?fields.sourceKind:inferred) as SourceKind;
+      if(sourceKind!==inferred)throw new Error('sourceKind does not match the uploaded file');
+      const targetDocumentId=fields.documentId?.trim()||null;
+      if(targetDocumentId&&!row('SELECT id FROM documents WHERE id=?',targetDocumentId))throw new Error('Target document not found');
+      const defaults=academicImportSettings();let policy=defaults;
+      if(fields.aiReview){const override=z.object({enabled:z.boolean().optional(),maxCalls:z.number().int().min(1).max(40).optional(),concurrency:z.number().int().min(1).max(2).optional(),sourceReference:z.boolean().optional(),autoApply:z.boolean().optional()}).strict().parse(JSON.parse(fields.aiReview));policy={enabled:override.enabled??defaults.enabled,maxCalls:override.maxCalls??defaults.maxCalls,concurrency:override.concurrency??defaults.concurrency,sourceReference:override.sourceReference??defaults.sourceReference,autoApply:override.autoApply??defaults.autoApply}}
+      const time=now();
+      db.prepare(`INSERT INTO import_jobs(id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,target_document_id,
+        entry_path,status,stage,progress,stages_json,warnings_json,provenance_json,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference,
+        call_count,qa_status,cancel_requested,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,'queued','queued',0,'[]','[]','{}',?,?,?,?,?,0,?,0,?,?)`)
+        .run(id,sourceKind,source.name,source.mime,source.path,source.hash,companionPath??null,targetDocumentId,fields.entryPath?.trim()||null,
+          policy.enabled?1:0,policy.maxCalls,policy.concurrency,policy.autoApply?1:0,policy.enabled&&policy.sourceReference?1:0,policy.enabled?'pending':'skipped',time,time);
+      lifecycle?.enqueue(id);
+      return reply.code(202).send({jobId:id,status:'queued'});
+    }catch(error){await rm(directory,{recursive:true,force:true});return reply.code(400).send({error:error instanceof Error?error.message:'Import upload failed'})}
+  });
+
+  app.get('/api/import-jobs',async request=>{const value=Number((request.query as{limit?:unknown})?.limit??200),limit=Number.isFinite(value)?Math.min(200,Math.max(1,Math.round(value))):200;return rows<JobRow>('SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT ?',limit).map(item=>response(item))});
+  app.get('/api/import-jobs/:id',async(request,reply)=>{const item=job((request.params as{id:string}).id);return item?response(item,true):reply.code(404).send({error:'Import job not found'})});
+  app.get('/api/import-jobs/:id/preview',async(request,reply)=>{const id=(request.params as{id:string}).id,item=job(id);if(!item)return reply.code(404).send({error:'Import job not found'});if(!['review-ready','published'].includes(item.status))return reply.code(409).send({error:'Import preview is not ready'});try{const nonce=randomBytes(18).toString('base64url'),html=(await readFile(join(config.dataDir,'imports',id,'preview.html'),'utf8')).replaceAll('__AFTERDRAFT_NONCE__',nonce);return reply.header('content-type','text/html; charset=utf-8').header('cache-control','private, no-store').header('referrer-policy','no-referrer').header('content-security-policy',`sandbox allow-scripts allow-same-origin allow-presentation; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html)}catch{return reply.code(404).send({error:'Import preview is unavailable'})}});
+  app.get('/api/import-jobs/:id/assets/:assetId',async(request,reply)=>{const {id,assetId}=request.params as{id:string;assetId:string},item=job(id);if(!item?.result_json)return reply.code(404).send({error:'Import asset not found'});try{const result=stagedResultSchema.parse(JSON.parse(item.result_json)),asset=result.assets.find(candidate=>candidate.id===assetId),root=resolve(config.dataDir,'imports',id)+sep;if(!asset||!resolve(asset.storagePath).startsWith(root))return reply.code(404).send({error:'Import asset not found'});let content=await readFile(asset.storagePath);if(asset.mimeType==='text/css'){const ids=new Map(result.assets.map(candidate=>[candidate.sourcePath,candidate.id]));content=Buffer.from(sanitizeStylesheet(content.toString('utf8'),asset.sourcePath,path=>ids.has(path)?`/api/import-jobs/${id}/assets/${ids.get(path)}`:null))}const etag=createHash('sha256').update(content).digest('hex');return reply.header('content-type',asset.mimeType).header('x-content-type-options','nosniff').header('cache-control','private, max-age=31536000, immutable').header('etag',`"${etag}"`).send(content)}catch{return reply.code(404).send({error:'Import asset not found'})}});
+  app.get('/api/import-jobs/:id/evidence/:evidenceId',async(request,reply)=>{const {id,evidenceId}=request.params as{id:string;evidenceId:string};if(!job(id)||!/^[A-Za-z0-9_-]{1,100}$/.test(evidenceId))return reply.code(404).send({error:'Import evidence not found'});try{const root=resolve(config.dataDir,'imports',id),index=evidenceIndexSchema.parse(JSON.parse(await readFile(join(root,'evidence','index.json'),'utf8'))),item=index.find(candidate=>candidate.id===evidenceId),path=item?resolve(root,item.relativePath):root;if(!item||!path.startsWith(root+sep))return reply.code(404).send({error:'Import evidence not found'});const content=await readFile(path);if(!validEvidenceImage(item.mimeType,content))return reply.code(404).send({error:'Import evidence not found'});return reply.header('content-type',item.mimeType).header('content-disposition','inline').header('cache-control','private, no-store').send(content)}catch{return reply.code(404).send({error:'Import evidence not found'})}});
+  app.post('/api/import-jobs/:id/retry',async(request,reply)=>{const id=(request.params as{id:string}).id,item=job(id);if(!item)return reply.code(404).send({error:'Import job not found'});if(!['failed','cancelled'].includes(item.status))return reply.code(409).send({error:'Only failed or cancelled imports can be retried'});if(json<string[]>(item.entry_choices_json,[]).length&&!item.entry_path)return reply.code(409).send({error:'Choose a project entry before retrying'});try{await clearRetryArtifacts(id)}catch(error){request.log.error({error,id},'Import retry cleanup failed');return reply.code(500).send({error:'Could not reset the previous import attempt'})}db.exec('BEGIN IMMEDIATE');let result;try{db.prepare('DELETE FROM import_findings WHERE import_job_id=?').run(id);result=db.prepare("UPDATE import_jobs SET status='queued',stage='queued',progress=0,stages_json='[]',warnings_json='[]',result_json=NULL,provenance_json='{}',call_count=0,qa_status=CASE WHEN ai_review_enabled=1 THEN 'pending' ELSE 'skipped' END,error=NULL,cancel_requested=0,completed_at=NULL,updated_at=? WHERE id=? AND status IN ('failed','cancelled')").run(now(),id);db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}if(!result.changes)return reply.code(409).send({error:'Only failed or cancelled imports can be retried'});lifecycle?.enqueue(id);return{ok:true,status:'queued'}});
+  app.post('/api/import-jobs/:id/cancel',async(request,reply)=>{const id=(request.params as{id:string}).id,result=db.prepare("UPDATE import_jobs SET cancel_requested=1,status='cancelled',stage='cancelled',error=NULL,updated_at=?,completed_at=? WHERE id=? AND status IN ('queued','converting')").run(now(),now(),id);if(!result.changes)return reply.code(409).send({error:'Import cannot be cancelled in its current state'});lifecycle?.cancel?.(id);return{ok:true,status:'cancelled'}});
+  app.post('/api/import-jobs/:id/entry',async(request,reply)=>{const parsed=z.object({entryPath:z.string().trim().min(1).max(500)}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const id=(request.params as{id:string}).id,item=job(id);if(!item)return reply.code(404).send({error:'Import job not found'});const choices=json<string[]>(item.entry_choices_json,[]);if(!choices.length||!choices.includes(parsed.data.entryPath))return reply.code(400).send({error:'Choose one of the offered project entries'});const result=db.prepare("UPDATE import_jobs SET entry_path=?,entry_choices_json='[]',status='queued',stage='queued',progress=0,error=NULL,cancel_requested=0,completed_at=NULL,updated_at=? WHERE id=? AND status IN ('failed','cancelled')").run(parsed.data.entryPath,now(),id);if(!result.changes)return reply.code(409).send({error:'Entry selection is not expected for this import'});lifecycle?.enqueue(id);return{ok:true,status:'queued'}});
+  app.post('/api/import-jobs/:id/finalize',async(request,reply)=>{const id=(request.params as{id:string}).id,item=job(id);if(!item)return reply.code(404).send({error:'Import job not found'});if(item.status==='published')return{documentId:item.document_id,versionId:item.document_version_id,deduplicated:true};if(item.status!=='review-ready')return reply.code(409).send({error:'Import is not ready to publish'});if(!lifecycle?.finalize)return reply.code(503).send({error:'Import finalizer is not available'});return lifecycle.finalize(id)});
+  app.patch('/api/import-jobs/:id/findings/:findingId',async(request,reply)=>{const parsed=z.object({decision:z.enum(['accepted','dismissed','manual'])}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const {id,findingId}=request.params as{id:string;findingId:string};try{return decideAcademicImportFinding(id,findingId,parsed.data.decision)}catch(error){return reply.code((error as any).statusCode??400).send({error:error instanceof Error?error.message:'Finding decision failed'})}});
+}
