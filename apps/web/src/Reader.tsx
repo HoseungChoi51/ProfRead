@@ -233,6 +233,7 @@ type EditContext = {
     structured: boolean;
   } | null;
   altText: string;
+  moveLabel?: string;
   objectLayout: {
     width: "auto" | "content" | "full";
     alignment: "left" | "center" | "right";
@@ -849,8 +850,40 @@ export function Reader({
         setMoveDraft(null);
         return;
       }
+      if (event.data.type === "move-source-label") {
+        const label =
+          typeof event.data.text === "string" ? event.data.text.trim() : "";
+        if (label)
+          setMoveDraft((current) =>
+            current ? { ...current, sourceLabel: label.slice(0, 80) } : current,
+          );
+        return;
+      }
       if (event.data.type === "move-destination-invalid") {
         setError("Choose a destination outside the object being moved.");
+        return;
+      }
+      if (event.data.type === "move-placement") {
+        const destinationBlockId =
+            typeof event.data.blockId === "string" ? event.data.blockId : "",
+          position =
+            event.data.position === "before" || event.data.position === "after"
+              ? event.data.position
+              : null,
+          operation =
+            moveDraft && position
+              ? moveObjectOperation(
+                  moveDraft.sourceBlockId,
+                  destinationBlockId,
+                  position,
+                )
+              : null;
+        if (!operation) {
+          setError("That paragraph gap cannot be used for this object.");
+          return;
+        }
+        queueEdit(operation);
+        cancelMove();
         return;
       }
       if (event.data.type === "edit-preview-error") {
@@ -2306,7 +2339,7 @@ export function Reader({
     setMoveDraft(null);
   }
   function beginMove(context: EditContext) {
-    const label = context.text.trim() || context.tag;
+    const label = context.moveLabel?.trim() || context.text.trim() || context.tag;
     setMoveDraft({
       sourceBlockId: context.blockId,
       sourceLabel: label.slice(0, 80),
@@ -2717,7 +2750,7 @@ export function Reader({
                 <b>Move {moveDraft.sourceLabel}</b> ·{" "}
                 {moveDraft.destinationBlockId
                   ? `Place relative to ${moveDraft.destinationLabel}`
-                  : "Click a destination block in the article"}
+                  : "Click a blue “Place here” line between paragraphs"}
               </span>
               {moveDraft.destinationBlockId && (
                 <>

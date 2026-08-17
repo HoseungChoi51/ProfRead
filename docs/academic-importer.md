@@ -57,6 +57,19 @@ the browsing view. Wide tables use scroll containers, visuals remain responsive
 and enlargable, and source ordering/associations that require judgment are
 surfaced for review rather than guessed silently.
 
+## Manual layout repair
+
+DOCX conversion preserves the source document's object order. Collected figure
+plates therefore remain collected instead of being moved to the first textual
+callout, which can be ambiguous for multi-panel and repeatedly cited figures.
+In document edit mode, select a figure or table, choose **Move object**, then
+choose a visible **Place here** line between paragraph blocks. The preview is
+reversible until **Save changes** is selected. Image-only paragraphs and a
+strongly adjacent `Figure`, `Fig.`, or `Table` caption move as one unit, including
+rich caption math; structured figures and scrollable table wrappers remain
+intact. Image drag-resizing and the object width/alignment controls remain
+available before or after relocation.
+
 ## Model-assisted review
 
 Deterministic code remains authoritative for extraction, byte/signature checks,

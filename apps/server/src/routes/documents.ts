@@ -10,7 +10,7 @@ import { importSource } from '../ingest/index.js';
 import { ensureContexts } from '../models/context-jobs.js';
 import { config } from '../config.js';
 import {effectiveVersion,readEffectiveHtml}from'../edits/effective.js';
-import{BRIDGE,READER_CSS}from'../ingest/sanitize.js';
+import{BRIDGE,MOVE_READER_CSS,READER_CSS}from'../ingest/sanitize.js';
 
 const responsiveReaderStyle='<style id="afterdraft-responsive">html{overflow-x:hidden}body{box-sizing:border-box!important;width:min(calc(100% - clamp(2rem,6vw,6rem)),1200px)!important;max-width:none!important;margin:clamp(1.5rem,4vw,3rem) auto!important;padding:0!important}body *{box-sizing:border-box}pre,table{max-width:100%;overflow:auto}</style>';
 
@@ -40,7 +40,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   app.get('/api/versions/:id/content', async (request, reply) => {
     const version = effectiveVersion((request.params as { id:string }).id);
     if (!version) return reply.code(404).send('Not found');
-    const nonce = randomBytes(18).toString('base64url'); const source=await readEffectiveHtml(version.id),html=source.replace(/<script[^>]*nonce="__AFTERDRAFT_NONCE__"[^>]*>[^]*?<\/script>/gi,'').replace('</head>',`${responsiveReaderStyle}<style id="afterdraft-current">${READER_CSS}</style></head>`).replace('</body>',`<script nonce="${nonce}">${BRIDGE}</script></body>`);
+    const nonce = randomBytes(18).toString('base64url'); const source=await readEffectiveHtml(version.id),html=source.replace(/<script[^>]*nonce="__AFTERDRAFT_NONCE__"[^>]*>[^]*?<\/script>/gi,'').replace('</head>',`${responsiveReaderStyle}<style id="afterdraft-current">${READER_CSS}${MOVE_READER_CSS}</style></head>`).replace('</body>',`<script nonce="${nonce}">${BRIDGE}</script></body>`);
     return reply.header('content-type','text/html; charset=utf-8').header('cache-control','private, no-store')
       .header('referrer-policy','strict-origin-when-cross-origin')
       .header('content-security-policy', `sandbox allow-scripts allow-same-origin allow-presentation; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html);
