@@ -20,7 +20,7 @@ it('preserves structured caption bodies in the edit preview',()=>{
   expect(BRIDGE).toContain("send('edit-preview-error'");
   expect(BRIDGE).toContain('&&!richCaption');
 });
-it('refreshes and reveals the exact stored selection range',()=>{expect(BRIDGE).toContain('selection-geometry');expect(BRIDGE).toContain("data.type==='refresh-selection'");expect(BRIDGE).toContain("data.type==='reveal-selection'");expect(BRIDGE).toContain('rangeFor(el,data.startOffset,data.endOffset)');expect(BRIDGE).toContain('new ResizeObserver')});
+it('refreshes and reveals the exact stored selection range, including folded sections',()=>{expect(BRIDGE).toContain('selection-geometry');expect(BRIDGE).toContain("data.type==='refresh-selection'");expect(BRIDGE).toContain("data.type==='reveal-selection'");expect(BRIDGE).toContain('rangeFor(el,data.startOffset,data.endOffset)');expect(BRIDGE).toContain("closest('details:not([open])')");expect(BRIDGE).toContain('folded.open=true');expect(BRIDGE).toContain('new ResizeObserver')});
 it('creates bridge selection contexts without splitting UTF-16 surrogate pairs',()=>{
   expect(BRIDGE).toContain('utf16ContextWindow(full,position.start,position.end)');
   expect(BRIDGE).toContain('prefix:context.prefix,suffix:context.suffix');

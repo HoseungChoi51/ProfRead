@@ -23,6 +23,7 @@ import {
   shouldSubmitComposerKey,
   shouldKeepPopoverPlacement,
   safeReaderExternalUrl,
+  sidebarSourceNavigationPayload,
   summaryReviewRequestIdentity,
   threadAnnotationCandidate,
   threadReplyRetryRequestId,
@@ -31,6 +32,85 @@ import {
   tryAcquireLock,
   writerRequestIdentity,
 } from "./Reader.js";
+
+describe("sidebar source navigation", () => {
+  it("targets the selected repeated-word occurrence with local offsets", () => {
+    expect(
+      sidebarSourceNavigationPayload({
+        anchor_id: "anchor-2",
+        block_id: "block-1",
+        block_type: "text",
+        exact_quote: "same",
+        status: "attached",
+        local_start_offset: 25,
+        local_end_offset: 29,
+      }),
+    ).toEqual({
+      type: "reveal-selection",
+      blockId: "block-1",
+      startOffset: 25,
+      endOffset: 29,
+    });
+  });
+
+  it("does not navigate unmatched, anchorless, incomplete, or invalid sources", () => {
+    const valid = {
+      anchor_id: "anchor-1",
+      block_id: "block-1",
+      block_type: "text",
+      exact_quote: "word",
+      status: "attached" as const,
+      local_start_offset: 5,
+      local_end_offset: 9,
+    };
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, status: "unmatched" }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, anchor_id: null }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, block_id: null }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({
+        ...valid,
+        local_start_offset: null,
+      }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, local_start_offset: -1 }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, local_start_offset: 5.5 }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, local_end_offset: 4 }),
+    ).toBeNull();
+    expect(
+      sidebarSourceNavigationPayload({ ...valid, local_end_offset: 8 }),
+    ).toBeNull();
+  });
+
+  it("allows a visual source at the block's zero-width anchor", () => {
+    expect(
+      sidebarSourceNavigationPayload({
+        anchor_id: "visual-anchor",
+        block_id: "figure-1",
+        block_type: "image",
+        exact_quote: "",
+        status: "attached",
+        local_start_offset: 0,
+        local_end_offset: 0,
+      }),
+    ).toEqual({
+      type: "reveal-selection",
+      blockId: "figure-1",
+      startOffset: 0,
+      endOffset: 0,
+    });
+  });
+});
 
 describe("selection popover geometry", () => {
   const pane = { top: 64, left: 24, width: 800, height: 620 };

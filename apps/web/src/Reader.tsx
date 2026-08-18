@@ -117,6 +117,51 @@ type ActiveEntry = {
   type: "thread" | "artifact" | "highlight" | "writer";
   id: string;
 };
+export type SidebarSource = {
+  anchor_id?: string | null;
+  block_id?: string | null;
+  block_type?: string | null;
+  exact_quote?: string | null;
+  status?: "attached" | "unmatched";
+  local_start_offset?: number | null;
+  local_end_offset?: number | null;
+};
+export type SidebarSourceNavigationPayload = {
+  type: "reveal-selection";
+  blockId: string;
+  startOffset: number;
+  endOffset: number;
+};
+export function sidebarSourceNavigationPayload(
+  source: SidebarSource,
+): SidebarSourceNavigationPayload | null {
+  if (source.status === "unmatched" || !source.anchor_id?.trim()) return null;
+  const blockId = source.block_id?.trim(),
+    startOffset = source.local_start_offset,
+    endOffset = source.local_end_offset;
+  if (
+    !blockId ||
+    typeof startOffset !== "number" ||
+    !Number.isInteger(startOffset) ||
+    startOffset < 0 ||
+    typeof endOffset !== "number" ||
+    !Number.isInteger(endOffset) ||
+    endOffset < startOffset
+  )
+    return null;
+  const visual = Boolean(source.block_type && source.block_type !== "text");
+  if (visual) {
+    if (startOffset !== 0 || endOffset !== 0) return null;
+  } else {
+    if (endOffset === startOffset) return null;
+    if (
+      typeof source.exact_quote === "string" &&
+      endOffset - startOffset !== source.exact_quote.length
+    )
+      return null;
+  }
+  return { type: "reveal-selection", blockId, startOffset, endOffset };
+}
 type AskRetry = {
   key: string;
   threadId: string;
@@ -592,6 +637,7 @@ export function deriveThreadPreview(
 }
 const SIDEBAR_MIN = 420;
 const SIDEBAR_MAX = 960;
+const UNMATCHED_SOURCE_ERROR = "This source passage needs anchor repair.";
 const sidebarLimit = () =>
   Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, window.innerWidth - 360));
 const clampSidebar = (value: number) =>
@@ -2571,6 +2617,26 @@ export function Reader({
     writerWorkspace?.thread.id === activeEntry.id
       ? writerWorkspace
       : undefined;
+  function navigateToSidebarSource(source: SidebarSource): void {
+    if (source.status === "unmatched") {
+      setError(UNMATCHED_SOURCE_ERROR);
+      return;
+    }
+    setError((current) =>
+      current === UNMATCHED_SOURCE_ERROR ? "" : current,
+    );
+    const payload = sidebarSourceNavigationPayload(source);
+    if (payload)
+      iframe.current?.contentWindow?.postMessage(payload, "*");
+  }
+  function activateHighlight(highlight: Highlight): void {
+    setActiveEntry({ type: "highlight", id: highlight.id });
+    navigateToSidebarSource(highlight);
+  }
+  function activateThread(thread: Thread): void {
+    setActiveEntry({ type: "thread", id: thread.id });
+    navigateToSidebarSource(thread);
+  }
   if (!doc)
     return (
       <main className="center">
@@ -3107,9 +3173,7 @@ export function Reader({
                       ? "active"
                       : ""
                   }
-                  onClick={() =>
-                    setActiveEntry({ type: "highlight", id: highlight.id })
-                  }
+                  onClick={() => activateHighlight(highlight)}
                 >
                   <span>{highlight.note || highlight.exact_quote}</span>
                   <i>{highlight.kind}</i>
@@ -3145,9 +3209,7 @@ export function Reader({
                         ? "active"
                         : ""
                     }
-                    onClick={() =>
-                      setActiveEntry({ type: "thread", id: thread.id })
-                    }
+                    onClick={() => activateThread(thread)}
                   >
                     <span>{threadEntryLabel(thread)}</span>
                     {thread.action && <i>{thread.action}</i>}
@@ -3211,15 +3273,7 @@ export function Reader({
             {activeHighlight && (
               <HighlightCard
                 highlight={activeHighlight}
-                onAnchor={() =>
-                  iframe.current?.contentWindow?.postMessage(
-                    {
-                      type: "scroll-to-block",
-                      blockId: activeHighlight.block_id,
-                    },
-                    "*",
-                  )
-                }
+                onAnchor={() => activateHighlight(activeHighlight)}
                 onSave={updateHighlight}
                 onDelete={deleteHighlight}
                 onAddToWriter={() =>
@@ -3233,12 +3287,7 @@ export function Reader({
                 thread={activeThread}
                 running={running === activeThread.id}
                 busy={Boolean(running)}
-                onAnchor={() =>
-                  iframe.current?.contentWindow?.postMessage(
-                    { type: "scroll-to-block", blockId: activeThread.block_id },
-                    "*",
-                  )
-                }
+                onAnchor={() => activateThread(activeThread)}
                 onNestedAction={nestedAction}
                 onThreadAction={threadAction}
                 onReply={replyToThread}
