@@ -3,7 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from '../config.js';
 import { schema } from './schema.js';
-import { reattach } from '../anchors/reattach.js';
+import { isUtf16Boundary } from '../anchors/context.js';
+import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
 
 mkdirSync(config.dataDir, { recursive: true });
 mkdirSync(join(config.dataDir, 'documents'), { recursive: true });
@@ -136,6 +137,28 @@ if(!migration14Applied){
     if(!findingColumns.some(column=>column.name==='corroborated'))db.exec('ALTER TABLE import_findings ADD COLUMN corroborated INTEGER NOT NULL DEFAULT 0');
     if(!findingColumns.some(column=>column.name==='applied_at'))db.exec('ALTER TABLE import_findings ADD COLUMN applied_at TEXT');
     db.prepare('INSERT INTO migrations(version,applied_at)VALUES(14,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+}
+
+const migration15Applied=db.prepare('SELECT 1 FROM migrations WHERE version=15').get();
+if(!migration15Applied){
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    type StoredTextAnchor={id:string;document_version_id:string;block_id:string;exact_quote:string;prefix_text:string;suffix_text:string;start_offset:number;end_offset:number};
+    type StoredBlock={blockId:string;text:string;start:number;end:number};
+    const anchors=db.prepare("SELECT id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset FROM anchors WHERE status='attached' AND block_type='text'").all() as StoredTextAnchor[];
+    const blocksByVersion=new Map<string,StoredBlock[]>(),selectBlocks=db.prepare('SELECT id AS blockId,text_content AS text,start_offset AS start,end_offset AS end FROM blocks WHERE document_version_id=? ORDER BY ordinal'),markUnmatched=db.prepare("UPDATE anchors SET status='unmatched' WHERE id=?");
+    for(const anchor of anchors){
+      let blocks=blocksByVersion.get(anchor.document_version_id);if(!blocks){blocks=selectBlocks.all(anchor.document_version_id) as StoredBlock[];blocksByVersion.set(anchor.document_version_id,blocks)}
+      const block=blocks.find(candidate=>candidate.blockId===anchor.block_id),localStart=block?anchor.start_offset-block.start:-1,localEnd=block?anchor.end_offset-block.start:-1;
+      // String length, slice, and indexOf intentionally use JavaScript UTF-16
+      // coordinates, which are also the browser Selection/Range coordinates.
+      const coordinateValid=Boolean(block&&Number.isInteger(localStart)&&Number.isInteger(localEnd)&&localStart>=0&&localEnd===localStart+anchor.exact_quote.length&&localEnd<=block.text.length&&isUtf16Boundary(block.text,localStart)&&isUtf16Boundary(block.text,localEnd)&&isUtf16Boundary(block.text,localStart-anchor.prefix_text.length)&&isUtf16Boundary(block.text,localEnd+anchor.suffix_text.length)&&block.text.slice(localStart,localEnd)===anchor.exact_quote&&(!anchor.prefix_text||block.text.slice(Math.max(0,localStart-anchor.prefix_text.length),localStart)===anchor.prefix_text)&&(!anchor.suffix_text||block.text.slice(localEnd,localEnd+anchor.suffix_text.length)===anchor.suffix_text));
+      const uniqueContext=countExactContextOccurrences({exact:anchor.exact_quote,prefix:anchor.prefix_text,suffix:anchor.suffix_text},blocks)===1;
+      if(!coordinateValid||!uniqueContext)markUnmatched.run(anchor.id);
+    }
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(15,?)').run(new Date().toISOString());
     db.exec('COMMIT');
   }catch(error){db.exec('ROLLBACK');throw error}
 }

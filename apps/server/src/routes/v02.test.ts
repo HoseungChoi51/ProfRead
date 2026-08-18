@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
+import { utf16ContextWindow } from '../anchors/context.js';
 import { db, now, row } from '../db/index.js';
 import { importSource } from '../ingest/index.js';
 
@@ -26,7 +27,7 @@ async function anchoredDocument(html:string){
 }
 
 async function createAnchor(documentVersionId:string,block:{id:string;text_content:string},exact:string,startOffset:number){
-  const endOffset=startOffset+exact.length,response=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId,selector:{blockId:block.id,exact,prefix:block.text_content.slice(Math.max(0,startOffset-32),startOffset),suffix:block.text_content.slice(endOffset,endOffset+32),startOffset,endOffset,blockType:'text'}}});
+  const endOffset=startOffset+exact.length,context=utf16ContextWindow(block.text_content,startOffset,endOffset),response=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId,selector:{blockId:block.id,exact,prefix:context.prefix,suffix:context.suffix,startOffset,endOffset,blockType:'text'}}});
   expect(response.statusCode).toBe(201);
   return JSON.parse(response.body) as{id:string};
 }
@@ -83,6 +84,55 @@ describe('v0.2 semantic reader data',()=>{
     expect(highlights.find(entry=>entry.anchor_id===anchor.id)?.status).toBe('unmatched');expect(threads.find(entry=>entry.anchor_id===anchor.id)?.status).toBe('unmatched');
   });
 
+  it('keeps an exact repeated quote in its trusted block when an earlier edit shifts global offsets',async()=>{
+    const item=await anchoredDocument('<title>Shifted edit</title><p>chosen target ending</p>'),localStart=item.block.text_content.indexOf('target'),anchor=await createAnchor(item.versionId,item.block,'target',localStart);
+    const response=await app.inject({method:'POST',url:`/api/versions/${item.versionId}/edits`,headers:writeHeaders(),payload:{baseRevision:0,operations:[{type:'insert-text-block',blockId:item.block.id,position:'before',tag:'p',text:'chosen target ending'}]}});
+    expect(response.statusCode).toBe(200);
+    const shifted=row<{start_offset:number}>('SELECT start_offset FROM blocks WHERE document_version_id=? AND id=?',item.versionId,item.block.id)!;
+    expect(row<{block_id:string;start_offset:number;end_offset:number;status:string}>('SELECT block_id,start_offset,end_offset,status FROM anchors WHERE id=?',anchor.id)).toEqual({block_id:item.block.id,start_offset:shifted.start_offset+localStart,end_offset:shifted.start_offset+localStart+'target'.length,status:'attached'});
+  });
+
+  it('keeps trusted context unchanged when an edit makes an exact quote unsupported',async()=>{
+    const item=await anchoredDocument('<title>Changed context</title><p>before target after</p>'),localStart=item.block.text_content.indexOf('target'),anchor=await createAnchor(item.versionId,item.block,'target',localStart),before=row<{prefix_text:string;suffix_text:string}>('SELECT prefix_text,suffix_text FROM anchors WHERE id=?',anchor.id)!;
+    const response=await app.inject({method:'POST',url:`/api/versions/${item.versionId}/edits`,headers:writeHeaders(),payload:{baseRevision:0,operations:[{type:'replace-text',blockId:item.block.id,text:'different target setting'}]}});
+    expect(response.statusCode).toBe(200);
+    expect(row<{prefix_text:string;suffix_text:string;status:string}>('SELECT prefix_text,suffix_text,status FROM anchors WHERE id=?',anchor.id)).toEqual({...before,status:'unmatched'});
+  });
+
+  it('does not trust occurrence-derived block identity across ambiguous imported versions',async()=>{
+    const first=await importSource({buffer:Buffer.from('<title>Duplicate v1</title><p>chosen target ending</p><p>chosen target ending</p>'),filename:`duplicate-v1-${randomUUID()}.html`,mimeType:'text/html'});
+    if(!first.documentId||!first.versionId)throw new Error('First duplicate import failed');
+    const selected=row<{id:string;text_content:string;start_offset:number}>('SELECT id,text_content,start_offset FROM blocks WHERE document_version_id=? AND text_content=? ORDER BY ordinal DESC LIMIT 1',first.versionId,'chosen target ending')!,localStart=selected.text_content.indexOf('target'),anchor=await createAnchor(first.versionId,selected,'target',localStart),context=row<{prefix_text:string;suffix_text:string}>('SELECT prefix_text,suffix_text FROM anchors WHERE id=?',anchor.id)!;
+    const second=await importSource({buffer:Buffer.from('<title>Duplicate v2</title><p>chosen target ending</p><p>chosen target ending</p><p>chosen target ending</p>'),filename:`duplicate-v2-${randomUUID()}.html`,mimeType:'text/html',documentId:first.documentId});
+    if(!second.versionId)throw new Error('Second duplicate import failed');
+    expect(row<{prefix_text:string;suffix_text:string;status:string}>('SELECT prefix_text,suffix_text,status FROM anchors WHERE migrated_from_id=?',anchor.id)).toEqual({...context,status:'unmatched'});
+  });
+
+  it('does not move a selected duplicate to the indistinguishable survivor in a new version',async()=>{
+    const first=await importSource({buffer:Buffer.from(`<title>Deleted duplicate ${randomUUID()}</title><p>chosen target ending</p><p>chosen target ending</p>`),filename:`deleted-duplicate-v1-${randomUUID()}.html`,mimeType:'text/html'});
+    if(!first.documentId||!first.versionId)throw new Error('First duplicate import failed');
+    const selected=row<{id:string;text_content:string}>('SELECT id,text_content FROM blocks WHERE document_version_id=? AND text_content=? ORDER BY ordinal DESC LIMIT 1',first.versionId,'chosen target ending')!,localStart=selected.text_content.indexOf('target'),anchor=await createAnchor(first.versionId,selected,'target',localStart);
+    const second=await importSource({buffer:Buffer.from(`<title>Deleted duplicate next ${randomUUID()}</title><p>chosen target ending</p>`),filename:`deleted-duplicate-v2-${randomUUID()}.html`,mimeType:'text/html',documentId:first.documentId});
+    if(!second.versionId)throw new Error('Second duplicate import failed');
+    expect(row<{status:string}>('SELECT status FROM anchors WHERE migrated_from_id=?',anchor.id)).toEqual({status:'unmatched'});
+  });
+
+  it('does not auto-reattach an explicitly unmatched anchor during an edit',async()=>{
+    const item=await anchoredDocument(`<title>Sticky unmatched edit ${randomUUID()}</title><p>chosen target ending</p>`),localStart=item.block.text_content.indexOf('target'),anchor=await createAnchor(item.versionId,item.block,'target',localStart);
+    db.prepare("UPDATE anchors SET status='unmatched' WHERE id=?").run(anchor.id);
+    const response=await app.inject({method:'POST',url:`/api/versions/${item.versionId}/edits`,headers:writeHeaders(),payload:{baseRevision:0,operations:[{type:'insert-text-block',blockId:item.block.id,position:'before',tag:'p',text:'New introduction'}]}});
+    expect(response.statusCode).toBe(200);
+    expect(row<{status:string}>('SELECT status FROM anchors WHERE id=?',anchor.id)).toEqual({status:'unmatched'});
+  });
+
+  it('does not auto-reattach an explicitly unmatched anchor in a new version',async()=>{
+    const item=await anchoredDocument(`<title>Sticky unmatched version ${randomUUID()}</title><p>chosen target ending</p>`),localStart=item.block.text_content.indexOf('target'),anchor=await createAnchor(item.versionId,item.block,'target',localStart);
+    db.prepare("UPDATE anchors SET status='unmatched' WHERE id=?").run(anchor.id);
+    const second=await importSource({buffer:Buffer.from(`<title>Sticky unmatched next ${randomUUID()}</title><p>chosen target ending</p>`),filename:`sticky-unmatched-${randomUUID()}.html`,mimeType:'text/html',documentId:item.documentId});
+    if(!second.versionId)throw new Error('Sticky unmatched version import failed');
+    expect(row<{status:string}>('SELECT status FROM anchors WHERE migrated_from_id=?',anchor.id)).toEqual({status:'unmatched'});
+  });
+
   it('anchors a repeated quote at the selected occurrence and validates semantic highlights',async()=>{
     const item=await anchoredDocument('<title>Repeated</title><p>same quote between same quote</p>'),exact='same quote',localStart=item.block.text_content.lastIndexOf(exact),anchor=await createAnchor(item.versionId!,item.block,exact,localStart);
     expect(row<{start_offset:number}>('SELECT start_offset FROM anchors WHERE id=?',anchor.id)?.start_offset).toBe(item.block.start_offset+localStart);
@@ -108,6 +158,49 @@ describe('v0.2 semantic reader data',()=>{
     expect(JSON.parse(updated.body)).toMatchObject({kind:'comment',color:'pink',checked:true,note:'Reader context'});
     expect((await app.inject({method:'DELETE',url:`/api/highlights/${highlight.id}`,headers:writeHeaders()})).statusCode).toBe(200);
     expect((await app.inject({method:'DELETE',url:`/api/highlights/${highlight.id}`,headers:writeHeaders()})).statusCode).toBe(404);
+  });
+
+  it('validates repaired offsets and refreshes exact surrounding context',async()=>{
+    const item=await anchoredDocument('<title>Repair repeated</title><p>left target middle target right</p>'),first=item.block.text_content.indexOf('target'),anchor=await createAnchor(item.versionId,item.block,'target',first),second=item.block.text_content.lastIndexOf('target');
+    db.prepare("UPDATE anchors SET status='unmatched' WHERE id=?").run(anchor.id);
+    const stale=await app.inject({method:'POST',url:`/api/anchors/${anchor.id}/repair`,headers:writeHeaders(),payload:{blockId:item.block.id,startOffset:second-1,endOffset:second+5,exactQuote:'target'}});
+    expect(stale.statusCode).toBe(409);expect(stale.body).toContain('selected location');
+    const repaired=await app.inject({method:'POST',url:`/api/anchors/${anchor.id}/repair`,headers:writeHeaders(),payload:{blockId:item.block.id,startOffset:second,endOffset:second+6,exactQuote:'target'}});
+    expect(repaired.statusCode).toBe(200);
+    expect(row<{start_offset:number;end_offset:number;prefix_text:string;suffix_text:string;status:string}>('SELECT start_offset,end_offset,prefix_text,suffix_text,status FROM anchors WHERE id=?',anchor.id)).toEqual({start_offset:item.block.start_offset+second,end_offset:item.block.start_offset+second+6,prefix_text:item.block.text_content.slice(Math.max(0,second-32),second),suffix_text:item.block.text_content.slice(second+6,second+38),status:'attached'});
+  });
+
+  it('round-trips surrogate-safe contexts through creation, rendering data, edit refresh, and repair',async()=>{
+    const expectedPrefix=`🙂${'a'.repeat(31)}`,exact='target',expectedSuffix=`${'b'.repeat(31)}🙂`,item=await anchoredDocument(`<title>UTF-16 contexts ${randomUUID()}</title><p>${expectedPrefix}${exact}${expectedSuffix}</p>`),localStart=item.block.text_content.indexOf(exact),localEnd=localStart+exact.length,unsafePrefix=item.block.text_content.slice(localStart-32,localStart),unsafeSuffix=item.block.text_content.slice(localEnd,localEnd+32);
+    expect(unsafePrefix.length).toBe(32);expect(unsafePrefix.charCodeAt(0)).toBeGreaterThanOrEqual(0xdc00);
+    expect(unsafeSuffix.length).toBe(32);expect(unsafeSuffix.charCodeAt(unsafeSuffix.length-1)).toBeLessThanOrEqual(0xdbff);
+    const stale=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId:item.versionId,selector:{blockId:item.block.id,exact,prefix:unsafePrefix,suffix:unsafeSuffix,startOffset:localStart,endOffset:localEnd,blockType:'text'}}});
+    expect(stale.statusCode).toBe(409);
+    const splitExact=item.block.text_content.slice(1,2),split=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId:item.versionId,selector:{blockId:item.block.id,exact:splitExact,prefix:'',suffix:'',startOffset:1,endOffset:2,blockType:'text'}}});
+    expect(split.statusCode).toBe(409);
+
+    const context=utf16ContextWindow(item.block.text_content,localStart,localEnd),created=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId:item.versionId,selector:{blockId:item.block.id,exact,prefix:context.prefix,suffix:context.suffix,startOffset:localStart,endOffset:localEnd,blockType:'text'}}});
+    expect(created.statusCode).toBe(201);
+    const anchor=JSON.parse(created.body) as{id:string;prefix:string;suffix:string;startOffset:number;endOffset:number};
+    expect(anchor).toMatchObject({prefix:expectedPrefix,suffix:expectedSuffix,startOffset:item.block.start_offset+localStart,endOffset:item.block.start_offset+localEnd});
+    expect(row<{prefix_text:string;suffix_text:string}>('SELECT prefix_text,suffix_text FROM anchors WHERE id=?',anchor.id)).toEqual({prefix_text:expectedPrefix,suffix_text:expectedSuffix});
+
+    const highlighted=await app.inject({method:'POST',url:'/api/highlights',headers:writeHeaders(),payload:{anchorId:anchor.id,kind:'important'}});expect(highlighted.statusCode).toBe(201);
+    const listed=JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/highlights`,headers:readHeaders()})).body) as Array<{anchor_id:string;prefix_text:string;suffix_text:string;local_start_offset:number;local_end_offset:number}>,rendered=listed.find(entry=>entry.anchor_id===anchor.id)!;
+    expect(rendered).toMatchObject({prefix_text:expectedPrefix,suffix_text:expectedSuffix,local_start_offset:localStart,local_end_offset:localEnd});
+    expect(item.block.text_content.slice(localStart-rendered.prefix_text.length,localStart)).toBe(rendered.prefix_text);
+    expect(item.block.text_content.slice(localEnd,localEnd+rendered.suffix_text.length)).toBe(rendered.suffix_text);
+
+    const edited=await app.inject({method:'POST',url:`/api/versions/${item.versionId}/edits`,headers:writeHeaders(),payload:{baseRevision:0,operations:[{type:'insert-text-block',blockId:item.block.id,position:'before',tag:'p',text:'New introduction'}]}});expect(edited.statusCode).toBe(200);
+    const shifted=row<{start_offset:number;text_content:string}>('SELECT start_offset,text_content FROM blocks WHERE document_version_id=? AND id=?',item.versionId,item.block.id)!,afterEdit=row<{start_offset:number;end_offset:number;prefix_text:string;suffix_text:string;status:string}>('SELECT start_offset,end_offset,prefix_text,suffix_text,status FROM anchors WHERE id=?',anchor.id)!;
+    expect(afterEdit).toEqual({start_offset:shifted.start_offset+localStart,end_offset:shifted.start_offset+localEnd,prefix_text:expectedPrefix,suffix_text:expectedSuffix,status:'attached'});
+
+    db.prepare("UPDATE anchors SET status='unmatched' WHERE id=?").run(anchor.id);
+    const repaired=await app.inject({method:'POST',url:`/api/anchors/${anchor.id}/repair`,headers:writeHeaders(),payload:{blockId:item.block.id,startOffset:localStart,endOffset:localEnd,exactQuote:exact}});expect(repaired.statusCode).toBe(200);expect(JSON.parse(repaired.body)).toMatchObject({prefix:expectedPrefix,suffix:expectedSuffix});
+    expect(row<{prefix_text:string;suffix_text:string;status:string}>('SELECT prefix_text,suffix_text,status FROM anchors WHERE id=?',anchor.id)).toEqual({prefix_text:expectedPrefix,suffix_text:expectedSuffix,status:'attached'});
+
+    const next=await importSource({buffer:Buffer.from(`<title>UTF-16 contexts next ${randomUUID()}</title><p>${expectedPrefix}${exact}${expectedSuffix}</p>`),filename:`utf16-context-next-${randomUUID()}.html`,mimeType:'text/html',documentId:item.documentId});if(!next.versionId)throw new Error('UTF-16 context version import failed');
+    expect(row<{prefix_text:string;suffix_text:string;status:string}>('SELECT prefix_text,suffix_text,status FROM anchors WHERE migrated_from_id=?',anchor.id)).toEqual({prefix_text:expectedPrefix,suffix_text:expectedSuffix,status:'attached'});
   });
 
   it('stores, returns, and removes an editable thread annotation',async()=>{

@@ -11,6 +11,7 @@ import { ensureContexts } from '../models/context-jobs.js';
 import { config } from '../config.js';
 import {effectiveVersion,readEffectiveHtml}from'../edits/effective.js';
 import{BRIDGE,MOVE_READER_CSS,READER_CSS}from'../ingest/sanitize.js';
+import{utf16ContextWindow}from'../anchors/context.js';
 
 const responsiveReaderStyle='<style id="afterdraft-responsive">html{overflow-x:hidden}body{box-sizing:border-box!important;width:min(calc(100% - clamp(2rem,6vw,6rem)),1200px)!important;max-width:none!important;margin:clamp(1.5rem,4vw,3rem) auto!important;padding:0!important}body *{box-sizing:border-box}pre,table{max-width:100%;overflow:auto}</style>';
 
@@ -61,13 +62,15 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const s=parsed.data.selector; const block=row<{ id:string; text_content:string;start_offset:number }>('SELECT id,text_content,start_offset FROM blocks WHERE id=? AND document_version_id=?',s.blockId,parsed.data.documentVersionId);
     if (!block) return reply.code(409).send({ error:'Anchor no longer matches this document version' });
-    let localStart=0;
+    let localStart=0,prefix='',suffix='';
     if(s.blockType==='text'){
-      const exactAtOffset=s.endOffset===s.startOffset+s.exact.length&&block.text_content.slice(s.startOffset,s.endOffset)===s.exact,prefixAtOffset=!s.prefix||block.text_content.slice(Math.max(0,s.startOffset-s.prefix.length),s.startOffset)===s.prefix,suffixAtOffset=!s.suffix||block.text_content.slice(s.endOffset,s.endOffset+s.suffix.length)===s.suffix;
-      if(!exactAtOffset||!prefixAtOffset||!suffixAtOffset)return reply.code(409).send({error:'Anchor no longer matches the selected location; select the passage again'});
+      let context;try{context=utf16ContextWindow(block.text_content,s.startOffset,s.endOffset)}catch{return reply.code(409).send({error:'Anchor no longer matches the selected location; select the passage again'})}
+      const exactAtOffset=s.endOffset===s.startOffset+s.exact.length&&block.text_content.slice(s.startOffset,s.endOffset)===s.exact;
+      if(!exactAtOffset||s.prefix!==context.prefix||s.suffix!==context.suffix)return reply.code(409).send({error:'Anchor no longer matches the selected location; select the passage again'});
+      prefix=context.prefix;suffix=context.suffix;
       localStart=s.startOffset;
-    }
-    const globalStart=block.start_offset+localStart,globalEnd=globalStart+s.exact.length;const id=nanoid(); db.prepare(`INSERT INTO anchors (id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset,block_type,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id,parsed.data.documentVersionId,s.blockId,s.exact,s.prefix,s.suffix,globalStart,globalEnd,s.blockType,now()); return reply.code(201).send({id,...s,startOffset:globalStart,endOffset:globalEnd,status:'attached'});
+    }else if(s.prefix||s.suffix)return reply.code(409).send({error:'Visual anchors cannot contain text context'});
+    const globalStart=block.start_offset+localStart,globalEnd=globalStart+s.exact.length;const id=nanoid(); db.prepare(`INSERT INTO anchors (id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset,block_type,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id,parsed.data.documentVersionId,s.blockId,s.exact,prefix,suffix,globalStart,globalEnd,s.blockType,now()); return reply.code(201).send({id,...s,prefix,suffix,startOffset:globalStart,endOffset:globalEnd,status:'attached'});
   });
   app.post('/api/highlights', async (request, reply) => {
     const parsed=z.object({anchorId:z.string(),kind:z.enum(['important','question','comment']).optional(),note:z.string().max(2000).nullable().optional(),color:z.enum(['yellow','green','blue','pink']).optional(),checked:z.boolean().optional()}).safeParse(request.body);

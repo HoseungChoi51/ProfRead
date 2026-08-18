@@ -21,6 +21,11 @@ it('preserves structured caption bodies in the edit preview',()=>{
   expect(BRIDGE).toContain('&&!richCaption');
 });
 it('refreshes and reveals the exact stored selection range',()=>{expect(BRIDGE).toContain('selection-geometry');expect(BRIDGE).toContain("data.type==='refresh-selection'");expect(BRIDGE).toContain("data.type==='reveal-selection'");expect(BRIDGE).toContain('rangeFor(el,data.startOffset,data.endOffset)');expect(BRIDGE).toContain('new ResizeObserver')});
+it('creates bridge selection contexts without splitting UTF-16 surrogate pairs',()=>{
+  expect(BRIDGE).toContain('utf16ContextWindow(full,position.start,position.end)');
+  expect(BRIDGE).toContain('prefix:context.prefix,suffix:context.suffix');
+  expect(()=>new Function(BRIDGE)).not.toThrow();
+});
 it('debounces native selection changes without duplicating completed ranges',()=>{
   expect(BRIDGE).toContain('selectionTimer=setTimeout');
   expect(BRIDGE).toContain('},280)');
@@ -69,6 +74,8 @@ it('renders and refreshes accessible semantic anchor marks',()=>{
   expect(BRIDGE).toContain('describeGroup(existing,a)');
   expect(BRIDGE).toContain('a.localStartOffset??a.local_start_offset');
   expect(BRIDGE).toContain('index.text.slice(storedStart,storedEnd)===a.exact');
+  expect(BRIDGE).toContain("index.text.slice(Math.max(0,storedStart-prefix.length),storedStart)===prefix");
+  expect(BRIDGE).toContain('index.text.slice(storedEnd,storedEnd+suffix.length)===suffix');
   expect(BRIDGE).toContain("a.status&&a.status!=='attached'");
   expect(BRIDGE).toContain("anchors.filter(anchor=>!anchor.status||anchor.status==='attached')");
   expect(BRIDGE).toContain("closest('annotation,annotation-xml')");

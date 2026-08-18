@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { diagramSpecSchema, type SummaryBasis, type SummaryFreshness } from '@afterdraft/shared';
 import { db, now, row, rows } from '../db/index.js';
+import { utf16ContextWindow } from '../anchors/context.js';
 import { latestSummaryReview, summaryBasis, summaryFreshness, validateSummaryArtifactContent } from '../models/summary-review.js';
 
 export { summaryBasis } from '../models/summary-review.js';
@@ -110,6 +111,15 @@ export function registerKnowledgeRoutes(app:FastifyInstance):void{
 
   app.patch('/api/artifacts/:id/promote',async(request,reply)=>{const parsed=z.object({promoted:z.boolean()}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const result=db.prepare('UPDATE artifacts SET promoted=? WHERE id=?').run(parsed.data.promoted?1:0,(request.params as{id:string}).id);return result.changes?{ok:true}:reply.code(404).send({error:'Artifact not found'});});
   app.get('/api/anchors/repair',async()=>rows(`SELECT a.*,d.id document_id,d.title FROM anchors a JOIN document_versions v ON v.id=a.document_version_id JOIN documents d ON d.id=v.document_id WHERE a.status='unmatched' ORDER BY a.created_at DESC`));
-  app.post('/api/anchors/:id/repair',async(request,reply)=>{const parsed=z.object({blockId:z.string(),startOffset:z.number().int().nonnegative(),endOffset:z.number().int().nonnegative(),exactQuote:z.string()}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const anchorId=(request.params as{id:string}).id,block=row<{start_offset:number}>('SELECT b.start_offset FROM blocks b JOIN anchors a ON a.document_version_id=b.document_version_id WHERE a.id=? AND b.id=?',anchorId,parsed.data.blockId);if(!block)return reply.code(404).send({error:'Target block not found'});const result=db.prepare("UPDATE anchors SET block_id=?,start_offset=?,end_offset=?,exact_quote=?,status='attached' WHERE id=?").run(parsed.data.blockId,block.start_offset+parsed.data.startOffset,block.start_offset+parsed.data.endOffset,parsed.data.exactQuote,anchorId);return result.changes?{ok:true}:reply.code(404).send({error:'Anchor not found'});});
+  app.post('/api/anchors/:id/repair',async(request,reply)=>{
+    const parsed=z.object({blockId:z.string(),startOffset:z.number().int().nonnegative(),endOffset:z.number().int().nonnegative(),exactQuote:z.string().max(100_000)}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});
+    const anchorId=(request.params as{id:string}).id,block=row<{start_offset:number;text_content:string}>('SELECT b.start_offset,b.text_content FROM blocks b JOIN anchors a ON a.document_version_id=b.document_version_id WHERE a.id=? AND b.id=?',anchorId,parsed.data.blockId);
+    if(!block)return reply.code(404).send({error:'Target block not found'});
+    const{startOffset,endOffset,exactQuote}=parsed.data;
+    let context;try{context=utf16ContextWindow(block.text_content,startOffset,endOffset)}catch{return reply.code(409).send({error:'Repair no longer matches the selected location; select the passage again'})}
+    if(endOffset!==startOffset+exactQuote.length||block.text_content.slice(startOffset,endOffset)!==exactQuote)return reply.code(409).send({error:'Repair no longer matches the selected location; select the passage again'});
+    const{prefix,suffix}=context,result=db.prepare("UPDATE anchors SET block_id=?,start_offset=?,end_offset=?,exact_quote=?,prefix_text=?,suffix_text=?,status='attached' WHERE id=?").run(parsed.data.blockId,block.start_offset+startOffset,block.start_offset+endOffset,exactQuote,prefix,suffix,anchorId);
+    return result.changes?{ok:true,prefix,suffix}:reply.code(404).send({error:'Anchor not found'});
+  });
   app.get('/api/search',async(request,reply)=>{const q=request.query as Record<string,string|undefined>;if(!q.q?.trim())return reply.code(400).send({error:'Search query is required'});const filters:string[]=['search_index MATCH ?'];const params:any[]=[q.q];for(const [key,column] of [['document','document_id'],['type','kind'],['model','model_id']] as const)if(q[key]){filters.push(`${column}=?`);params.push(q[key])}if(q.tag){filters.push('tags LIKE ?');params.push(`%${q.tag}%`)}if(q.from){filters.push('created_at>=?');params.push(q.from)}if(q.to){filters.push('created_at<=?');params.push(q.to)}return rows(`SELECT kind,entity_id,document_id,title,snippet(search_index,4,'<mark>','</mark>','…',24) snippet,tags,model_id,created_at FROM search_index WHERE ${filters.join(' AND ')} ORDER BY rank LIMIT 100`,...params)});
 }
