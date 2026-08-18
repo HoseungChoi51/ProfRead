@@ -53,7 +53,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   });
   app.get('/api/generated/:imageId.png',async(request,reply)=>{const imageId=(request.params as {imageId:string}).imageId;if(!/^[A-Za-z0-9_-]+$/.test(imageId))return reply.code(400).send({error:'Invalid image ID'});try{return reply.header('content-type','image/png').header('cache-control','private, max-age=31536000, immutable').send(await readFile(join(config.dataDir,'generated',`${imageId}.png`)))}catch{return reply.code(404).send({error:'Generated image not found'})}});
   app.get('/api/documents/:id/blocks', async request => rows('SELECT b.* FROM blocks b JOIN document_versions v ON v.id=b.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?) ORDER BY ordinal', (request.params as {id:string}).id, (request.params as {id:string}).id));
-  app.get('/api/documents/:id/highlights',async request=>rows(`SELECT h.id,h.checked,h.color,h.kind,h.note,a.id anchor_id,a.block_id,a.exact_quote,a.start_offset-b.start_offset local_start_offset,a.end_offset-b.start_offset local_end_offset FROM highlights h JOIN anchors a ON a.id=h.anchor_id LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?)`,(request.params as {id:string}).id,(request.params as {id:string}).id));
+  app.get('/api/documents/:id/highlights',async request=>rows(`SELECT h.id,h.checked,h.color,h.kind,h.note,a.id anchor_id,a.block_id,a.exact_quote,a.prefix_text,a.suffix_text,a.status,a.start_offset-b.start_offset local_start_offset,a.end_offset-b.start_offset local_end_offset FROM highlights h JOIN anchors a ON a.id=h.anchor_id LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?)`,(request.params as {id:string}).id,(request.params as {id:string}).id));
   app.get('/api/versions/:id/jobs',async request=>rows('SELECT id,kind,status,progress,error,updated_at FROM background_jobs WHERE document_version_id=? ORDER BY created_at DESC',(request.params as {id:string}).id));
 
   app.post('/api/anchors', async (request, reply) => {
@@ -63,15 +63,9 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
     if (!block) return reply.code(409).send({ error:'Anchor no longer matches this document version' });
     let localStart=0;
     if(s.blockType==='text'){
-      const exactAtOffset=s.endOffset>=s.startOffset&&block.text_content.slice(s.startOffset,s.endOffset)===s.exact;
-      if(exactAtOffset)localStart=s.startOffset;
-      else{
-        const candidates:number[]=[];let cursor=block.text_content.indexOf(s.exact);
-        while(cursor>=0){candidates.push(cursor);cursor=block.text_content.indexOf(s.exact,cursor+Math.max(1,s.exact.length))}
-        if(!candidates.length)return reply.code(409).send({error:'Anchor no longer matches this document version'});
-        const score=(offset:number)=>(s.prefix&&block.text_content.slice(Math.max(0,offset-s.prefix.length),offset)===s.prefix?2:0)+(s.suffix&&block.text_content.slice(offset+s.exact.length,offset+s.exact.length+s.suffix.length)===s.suffix?2:0)-Math.abs(offset-s.startOffset)/Math.max(1,block.text_content.length);
-        localStart=candidates.sort((a,b)=>score(b)-score(a))[0]!;
-      }
+      const exactAtOffset=s.endOffset===s.startOffset+s.exact.length&&block.text_content.slice(s.startOffset,s.endOffset)===s.exact,prefixAtOffset=!s.prefix||block.text_content.slice(Math.max(0,s.startOffset-s.prefix.length),s.startOffset)===s.prefix,suffixAtOffset=!s.suffix||block.text_content.slice(s.endOffset,s.endOffset+s.suffix.length)===s.suffix;
+      if(!exactAtOffset||!prefixAtOffset||!suffixAtOffset)return reply.code(409).send({error:'Anchor no longer matches the selected location; select the passage again'});
+      localStart=s.startOffset;
     }
     const globalStart=block.start_offset+localStart,globalEnd=globalStart+s.exact.length;const id=nanoid(); db.prepare(`INSERT INTO anchors (id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset,block_type,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id,parsed.data.documentVersionId,s.blockId,s.exact,s.prefix,s.suffix,globalStart,globalEnd,s.blockType,now()); return reply.code(201).send({id,...s,startOffset:globalStart,endOffset:globalEnd,status:'attached'});
   });

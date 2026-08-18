@@ -41,6 +41,9 @@ type Thread = {
   title?: string;
   block_id?: string;
   exact_quote?: string;
+  prefix_text?: string;
+  suffix_text?: string;
+  status?: "attached" | "unmatched";
   block_type?: string;
   local_start_offset?: number;
   local_end_offset?: number;
@@ -59,6 +62,9 @@ type Highlight = {
   anchor_id: string;
   block_id: string;
   exact_quote: string;
+  prefix_text?: string;
+  suffix_text?: string;
+  status?: "attached" | "unmatched";
   checked: number;
   local_start_offset: number;
   local_end_offset: number;
@@ -767,6 +773,9 @@ export function Reader({
             id: thread.anchor_id,
             blockId: thread.block_id,
             exact: thread.exact_quote,
+            prefix: thread.prefix_text,
+            suffix: thread.suffix_text,
+            status: thread.status,
             checked: false,
             action: thread.action,
             annotationText:
@@ -781,6 +790,9 @@ export function Reader({
         id: highlight.anchor_id,
         blockId: highlight.block_id,
         exact: highlight.exact_quote,
+        prefix: highlight.prefix_text,
+        suffix: highlight.suffix_text,
+        status: highlight.status,
         checked: Boolean(highlight.checked),
         kind: highlight.kind,
         color: highlight.color,

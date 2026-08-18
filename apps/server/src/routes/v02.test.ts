@@ -73,15 +73,26 @@ describe('v0.2 semantic reader data',()=>{
 
   it('keeps a non-exact edit reattachment unmatched for repair',async()=>{
     const item=await anchoredDocument(`<title>Fuzzy edit ${randomUUID()}</title><p>alpha beta gamma</p>`),anchor=await createAnchor(item.versionId,item.block,'alpha beta gamma',0),changed='alpha beta changed gamma';
+    const highlightResponse=await app.inject({method:'POST',url:'/api/highlights',headers:writeHeaders(),payload:{anchorId:anchor.id,kind:'important'}}),threadResponse=await app.inject({method:'POST',url:'/api/threads',headers:writeHeaders(),payload:{documentId:item.documentId,anchorId:anchor.id,title:'Fuzzy anchor'}});
+    expect(highlightResponse.statusCode).toBe(201);expect(threadResponse.statusCode).toBe(201);
     const response=await app.inject({method:'POST',url:`/api/versions/${item.versionId}/edits`,headers:writeHeaders(),payload:{baseRevision:0,operations:[{type:'replace-text',blockId:item.block.id,text:changed}]}});
     expect(response.statusCode).toBe(200);
     const block=row<{start_offset:number;end_offset:number}>('SELECT start_offset,end_offset FROM blocks WHERE document_version_id=? AND id=?',item.versionId,item.block.id)!;
     expect(row<{start_offset:number;end_offset:number;status:string}>('SELECT start_offset,end_offset,status FROM anchors WHERE id=?',anchor.id)).toEqual({start_offset:block.start_offset,end_offset:block.end_offset,status:'unmatched'});
+    const highlights=JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/highlights`,headers:readHeaders()})).body) as Array<{anchor_id:string;status:string}>,threads=JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/threads`,headers:readHeaders()})).body) as Array<{anchor_id:string;status:string}>;
+    expect(highlights.find(entry=>entry.anchor_id===anchor.id)?.status).toBe('unmatched');expect(threads.find(entry=>entry.anchor_id===anchor.id)?.status).toBe('unmatched');
   });
 
   it('anchors a repeated quote at the selected occurrence and validates semantic highlights',async()=>{
     const item=await anchoredDocument('<title>Repeated</title><p>same quote between same quote</p>'),exact='same quote',localStart=item.block.text_content.lastIndexOf(exact),anchor=await createAnchor(item.versionId!,item.block,exact,localStart);
     expect(row<{start_offset:number}>('SELECT start_offset FROM anchors WHERE id=?',anchor.id)?.start_offset).toBe(item.block.start_offset+localStart);
+
+    const wrongOffset=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId:item.versionId,selector:{blockId:item.block.id,exact,prefix:'',suffix:'',startOffset:1,endOffset:1+exact.length,blockType:'text'}}});
+    expect(wrongOffset.statusCode).toBe(409);expect(wrongOffset.body).toContain('selected location');
+    const conflictingContext=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId:item.versionId,selector:{blockId:item.block.id,exact,prefix:'same quote between ',suffix:'',startOffset:0,endOffset:exact.length,blockType:'text'}}});
+    expect(conflictingContext.statusCode).toBe(409);expect(conflictingContext.body).toContain('selected location');
+    const overlapping=await anchoredDocument('<title>Overlapping repeat</title><p>aaa</p>'),overlappingResponse=await app.inject({method:'POST',url:'/api/anchors',headers:writeHeaders(),payload:{documentVersionId:overlapping.versionId,selector:{blockId:overlapping.block.id,exact:'aa',prefix:'',suffix:'',startOffset:2,endOffset:4,blockType:'text'}}});
+    expect(overlappingResponse.statusCode).toBe(409);expect(overlappingResponse.body).toContain('selected location');
 
     const invalid=await app.inject({method:'POST',url:'/api/highlights',headers:writeHeaders(),payload:{anchorId:anchor.id,kind:'comment',note:'   '}});
     expect(invalid.statusCode).toBe(400);
@@ -91,7 +102,7 @@ describe('v0.2 semantic reader data',()=>{
     expect(highlight).toMatchObject({kind:'important',color:'yellow',checked:true});
 
     const listed=JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/highlights`,headers:readHeaders()})).body);
-    expect(listed[0]).toMatchObject({id:highlight.id,kind:'important',local_start_offset:localStart,local_end_offset:localStart+exact.length});
+    expect(listed[0]).toMatchObject({id:highlight.id,kind:'important',prefix_text:'same quote between ',suffix_text:'',status:'attached',local_start_offset:localStart,local_end_offset:localStart+exact.length});
     expect((await app.inject({method:'PATCH',url:`/api/highlights/${highlight.id}`,headers:writeHeaders(),payload:{kind:'comment',note:null}})).statusCode).toBe(400);
     const updated=await app.inject({method:'PATCH',url:`/api/highlights/${highlight.id}`,headers:writeHeaders(),payload:{kind:'comment',note:'Reader context'}});
     expect(JSON.parse(updated.body)).toMatchObject({kind:'comment',color:'pink',checked:true,note:'Reader context'});
@@ -104,7 +115,7 @@ describe('v0.2 semantic reader data',()=>{
     const created=await app.inject({method:'POST',url:'/api/threads',headers:writeHeaders(),payload:{documentId:item.documentId,anchorId:anchor.id,title:'Define'}}),thread=JSON.parse(created.body) as{id:string};
     expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'  A concise note.  '}})).statusCode).toBe(200);
     const listed=JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/threads`,headers:readHeaders()})).body),saved=listed.find((entry:{id:string})=>entry.id===thread.id);
-    expect(saved).toMatchObject({annotation_text:'A concise note.',local_start_offset:0,local_end_offset:'Annotated passage'.length});
+    expect(saved).toMatchObject({annotation_text:'A concise note.',prefix_text:'',suffix_text:'',status:'attached',local_start_offset:0,local_end_offset:'Annotated passage'.length});
     expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'🙂'.repeat(500)}})).statusCode).toBe(200);
     expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'🙂'.repeat(501)}})).statusCode).toBe(400);
     expect((await app.inject({method:'PATCH',url:`/api/threads/${thread.id}/annotation`,headers:writeHeaders(),payload:{text:'x'.repeat(501)}})).statusCode).toBe(400);

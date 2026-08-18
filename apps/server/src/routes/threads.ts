@@ -10,7 +10,7 @@ const annotationText=z.string().max(1000).refine(
 );
 
 export function registerThreadRoutes(app: FastifyInstance): void {
-  app.get('/api/documents/:id/threads', async request => rows(`SELECT t.*,a.block_id,a.exact_quote,a.block_type,a.start_offset-b.start_offset local_start_offset,a.end_offset-b.start_offset local_end_offset,
+  app.get('/api/documents/:id/threads', async request => rows(`SELECT t.*,a.block_id,a.exact_quote,a.prefix_text,a.suffix_text,a.status,a.block_type,a.start_offset-b.start_offset local_start_offset,a.end_offset-b.start_offset local_end_offset,
     (SELECT r.action FROM model_runs r WHERE r.thread_id=t.id ORDER BY r.created_at LIMIT 1) action,
     (SELECT json_group_array(json_object('id',m.id,'role',m.role,'content',m.content,'parentMessageId',m.parent_message_id,'createdAt',m.created_at)) FROM messages m WHERE m.thread_id=t.id ORDER BY m.created_at) messages
     FROM threads t LEFT JOIN anchors a ON a.id=t.anchor_id LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id WHERE t.document_id=? ORDER BY t.created_at`,(request.params as {id:string}).id));

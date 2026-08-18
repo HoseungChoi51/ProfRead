@@ -10,6 +10,15 @@ describe('restricted document editing',()=>{it('saves atomic revisions, refreshe
   await expect(saveEdits(versionId,0,[{type:'replace-text',blockId:heading.id,text:'Stale'}])).rejects.toMatchObject({statusCode:409});const restored=await restoreEdit(versionId,0,1);expect(restored).toMatchObject({revision:2,title:sourceTitle});const original=await readFile(effectiveVersion(versionId)!.htmlPath,'utf8');expect(original).not.toContain('<details data-afterdraft-section');expect(original).not.toContain('Memory topology');expect(row<{title:string}>('SELECT title FROM documents WHERE id=?',imported.documentId)?.title).toBe(sourceTitle);expect(editHistory(versionId).revisions[0]).toMatchObject({revision:2,restored_from_revision:0});
 })});
 
+describe('raw edit coordinate persistence',()=>{
+  it('formats the selected visible word after whitespace and a MathML annotation',async()=>{
+    const marker=randomUUID(),imported=await importSource({buffer:Buffer.from(`<title>Raw edit ${marker}</title><p>  alpha <math><mtext>x</mtext><annotation encoding="application/x-tex">hidden target</annotation></math> omega target</p>`),filename:'raw-edit.html',mimeType:'text/html'});if(!imported.versionId)throw new Error('Import failed');const versionId=imported.versionId,block=row<{id:string}>('SELECT id FROM blocks WHERE document_version_id=? AND text_content=?',versionId,'alpha x omega target')!;
+    const initial=cheerio.load(await readFile(effectiveVersion(versionId)!.htmlPath,'utf8')),paragraph=initial(`[data-block-id="${block.id}"]`),raw=paragraph.text(),target='target',start=raw.lastIndexOf(target);expect(start).toBeGreaterThan(raw.indexOf(target));
+    await saveEdits(versionId,0,[{type:'format-text',blockId:block.id,startOffset:start,endOffset:start+target.length,style:'bold',enabled:true}]);
+    const edited=cheerio.load(await readFile(effectiveVersion(versionId)!.htmlPath,'utf8')),result=edited(`[data-block-id="${block.id}"]`);expect(result.find('strong[data-afterdraft-format="bold"]').text()).toBe(target);expect(result.find('annotation').text()).toBe('hidden target');expect(result.find('annotation strong')).toHaveLength(0);
+  });
+});
+
 describe('academic final-touch document editing',()=>{
   it('changes semantic metadata and layout without flattening rich heading or caption markup',async()=>{
     const marker=randomUUID(),imported=await importSource({buffer:Buffer.from(`<title>Academic ${marker}</title><h1>Academic draft</h1><h2>Methods <em>and <strong>results</strong></em> <math><mi>x</mi></math></h2><p>Move destination</p><figure><img alt="Old alternative"><figcaption>Figure <strong>1</strong>. <math><mi>x</mi></math> response <a href="https://example.test/evidence">source</a></figcaption></figure><p>Tail</p><math display="block" alttext="Old equation"><semantics><mrow><mi>y</mi></mrow><annotation encoding="application/x-tex">y</annotation></semantics></math>`),filename:'academic.html',mimeType:'text/html'});if(!imported.versionId)throw new Error('Import failed');const versionId=imported.versionId;
