@@ -8,7 +8,9 @@ import {
 } from "react";
 import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
 import Markdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { api, stream } from "./api.js";
 import {
   WriterPanel,
@@ -4270,11 +4272,156 @@ export function ThreadCard({
   );
 }
 
+function convertTexMathDelimiters(value: string): string {
+  return value
+    .replace(
+      /(?<!\\)\\\[([\s\S]*?)(?<!\\)\\\]/g,
+      (_match, latex: string) => `$$${latex}$$`,
+    )
+    .replace(
+      /(?<!\\)\\\(([^\n]*?)(?<!\\)\\\)/g,
+      (_match, latex: string) => `$${latex}$`,
+    );
+}
+
+function isEscapedCharacter(value: string, index: number): boolean {
+  let backslashes = 0;
+  for (
+    let cursor = index - 1;
+    cursor >= 0 && value[cursor] === "\\";
+    cursor -= 1
+  ) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+function convertOutsideCodeSpans(value: string): string {
+  let output = "";
+  let plainStart = 0;
+  let cursor = 0;
+  while (cursor < value.length) {
+    if (value[cursor] !== "`" || isEscapedCharacter(value, cursor)) {
+      cursor += 1;
+      continue;
+    }
+    let runLength = 1;
+    while (value[cursor + runLength] === "`") runLength += 1;
+    let closing = cursor + runLength;
+    while (closing < value.length) {
+      if (value[closing] !== "`") {
+        closing += 1;
+        continue;
+      }
+      let closingLength = 1;
+      while (value[closing + closingLength] === "`") closingLength += 1;
+      if (closingLength === runLength) break;
+      closing += closingLength;
+    }
+    if (closing >= value.length) {
+      cursor += runLength;
+      continue;
+    }
+    output += convertTexMathDelimiters(value.slice(plainStart, cursor));
+    output += value.slice(cursor, closing + runLength);
+    cursor = closing + runLength;
+    plainStart = cursor;
+  }
+  return output + convertTexMathDelimiters(value.slice(plainStart));
+}
+
+function stripMarkdownContainerPrefixes(value: string): string {
+  let content = value;
+  while (true) {
+    const previous = content;
+    content = content.replace(/^ {0,3}>[ \t]?/, "");
+    content = content.replace(
+      /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/,
+      "",
+    );
+    if (content === previous) return content;
+  }
+}
+
+function openingMarkdownFence(value: string): string {
+  return (
+    stripMarkdownContainerPrefixes(value).match(
+      /^ {0,3}(`{3,}|~{3,})/,
+    )?.[1] ?? ""
+  );
+}
+
+function closingMarkdownFence(value: string): string {
+  return (
+    stripMarkdownContainerPrefixes(value).match(
+      /^[ \t]*(`+|~+)[ \t]*$/,
+    )?.[1] ?? ""
+  );
+}
+
+function isIndentedMarkdownCode(value: string): boolean {
+  return /^(?: {4}|\t)/.test(stripMarkdownContainerPrefixes(value));
+}
+
+export function normalizeMarkdownMath(value: string): string {
+  const lines = value.split(/(?<=\n)/);
+  let output = "";
+  let plain = "";
+  let fenceCharacter = "";
+  let fenceLength = 0;
+  const flush = () => {
+    output += convertOutsideCodeSpans(plain);
+    plain = "";
+  };
+  for (const line of lines) {
+    const withoutNewline = line.replace(/\r?\n$/, "");
+    if (fenceCharacter) {
+      output += line;
+      const closing = closingMarkdownFence(withoutNewline);
+      if (
+        closing &&
+        closing[0] === fenceCharacter &&
+        closing.length >= fenceLength
+      ) {
+        fenceCharacter = "";
+        fenceLength = 0;
+      }
+      continue;
+    }
+    const opening = openingMarkdownFence(withoutNewline);
+    if (opening) {
+      flush();
+      output += line;
+      fenceCharacter = opening[0]!;
+      fenceLength = opening.length;
+    } else if (isIndentedMarkdownCode(withoutNewline)) {
+      flush();
+      output += line;
+    } else {
+      plain += line;
+    }
+  }
+  flush();
+  return output;
+}
+
 export function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="markdown-output">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          [
+            rehypeKatex,
+            {
+              throwOnError: false,
+              strict: "ignore",
+              trust: false,
+              maxSize: 20,
+              maxExpand: 1000,
+            },
+          ],
+        ]}
         skipHtml
         components={{
           a: ({ href, children }) => (
@@ -4289,7 +4436,7 @@ export function MarkdownContent({ content }: { content: string }) {
           ),
         }}
       >
-        {content}
+        {normalizeMarkdownMath(content)}
       </Markdown>
     </div>
   );

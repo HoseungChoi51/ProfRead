@@ -11,6 +11,7 @@ import {
   HighlightCard,
   limitUnicodeCodePoints,
   MarkdownContent,
+  normalizeMarkdownMath,
   moveObjectOperation,
   normalizeThreadPreview,
   openReaderExternalLink,
@@ -135,6 +136,110 @@ describe("selection popover geometry", () => {
 });
 
 describe("MarkdownContent", () => {
+  it("renders dollar and TeX-delimited inline and display math", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent
+        content={String.raw`Inline \(E=mc^2\) and $\alpha+\beta$.
+
+\[
+\int_0^1 x^2\,dx = \frac{1}{3}
+\]
+
+$$
+a^2+b^2=c^2
+$$`}
+      />,
+    );
+
+    expect((html.match(/class="katex-display"/g) ?? [])).toHaveLength(2);
+    expect(html).toContain('class="katex"');
+    expect(html).toContain("<math");
+    expect(html).toContain("<mfrac>");
+    expect(html).not.toContain("\\(");
+    expect(html).not.toContain("\\[");
+  });
+
+  it("leaves TeX delimiters inside inline and fenced code unchanged", () => {
+    const fencedExample = [
+      String.raw`Render \(x^2\).`,
+      "",
+      "Inline code: `\\(not math\\)`.",
+      "",
+      "~~~tex",
+      "\\[",
+      "\\notMath",
+      "\\]",
+      "~~~",
+    ].join("\n");
+
+    const normalized = normalizeMarkdownMath(fencedExample);
+    expect(normalized).toContain("Render $x^2$.");
+    expect(normalized).toContain("`\\(not math\\)`");
+    expect(normalized).toContain(
+      ["~~~tex", "\\[", "\\notMath", "\\]", "~~~"].join("\n"),
+    );
+
+    const html = renderToStaticMarkup(
+      <MarkdownContent content={fencedExample} />,
+    );
+    expect((html.match(/class="katex"/g) ?? [])).toHaveLength(1);
+    expect(html).toContain('class="language-tex"');
+  });
+
+  it("preserves indented and container-nested CommonMark code", () => {
+    const codeExamples = [
+      "    \\[",
+      "    \\notMath",
+      "    \\]",
+      "",
+      "> ~~~tex",
+      "> \\(not math\\)",
+      "> ~~~",
+      "",
+      "- ~~~tex",
+      "  \\[",
+      "  \\notMath",
+      "  \\]",
+      "  ~~~",
+      "",
+      String.raw`Render \(y\).`,
+    ].join("\n");
+
+    const normalized = normalizeMarkdownMath(codeExamples);
+    expect(normalized).toContain(
+      ["    \\[", "    \\notMath", "    \\]"].join("\n"),
+    );
+    expect(normalized).toContain(
+      ["> ~~~tex", "> \\(not math\\)", "> ~~~"].join("\n"),
+    );
+    expect(normalized).toContain(
+      [
+        "- ~~~tex",
+        "  \\[",
+        "  \\notMath",
+        "  \\]",
+        "  ~~~",
+      ].join("\n"),
+    );
+    expect(normalized).toContain("Render $y$.");
+
+    const html = renderToStaticMarkup(
+      <MarkdownContent content={codeExamples} />,
+    );
+    expect((html.match(/class="katex"/g) ?? [])).toHaveLength(1);
+  });
+
+  it("shows malformed or untrusted TeX without creating unsafe links", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent
+        content={String.raw`Malformed $\frac{1$ and untrusted $\href{https://example.invalid}{bad}$.`}
+      />,
+    );
+
+    expect(html).toContain("katex-error");
+    expect(html).not.toMatch(/<a(?:\s|>)/);
+  });
+
   it("renders model Markdown while ignoring raw HTML and remote images", () => {
     const html = renderToStaticMarkup(
       <MarkdownContent
@@ -544,7 +649,7 @@ describe("v0.2 Reader policies and cards", () => {
             {
               id: "answer-1",
               role: "assistant",
-              content: "A detailed answer",
+              content: "A detailed answer with \\(E=mc^2\\).",
               createdAt: "2026-08-11T00:00:00.000Z",
             },
           ],
@@ -573,6 +678,7 @@ describe("v0.2 Reader policies and cards", () => {
     expect(thread).toContain("Article annotation");
     expect(thread).toContain("Polish with AI");
     expect(thread).toContain("Copy answer");
+    expect(thread).toContain('class="katex"');
   });
 });
 
