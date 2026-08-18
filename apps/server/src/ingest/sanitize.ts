@@ -7,6 +7,8 @@ export interface SanitizedDocument {
   blocks: Array<{ id: string; ordinal: number; type: string; text: string; visual?: string; start: number; end: number }>;
 }
 
+function escapeTitle(value:string):string{return value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}
+
 export function looseAcademicCaptionKind(value:string):'figure'|'table'|null{
   if(/^\s*(?:fig(?:ure)?\.?)\s+(?:[A-Za-z]*\d+[A-Za-z]?(?:[._-][A-Za-z0-9]+)*|[IVXLCDM]+|\([A-Za-z0-9]+\))(?=\s|[.:：]|$)/i.test(value))return'figure';
   if(/^\s*table\s+(?:[A-Za-z]*\d+[A-Za-z]?(?:[._-][A-Za-z0-9]+)*|[IVXLCDM]+|\([A-Za-z0-9]+\))(?=\s|[.:：]|$)/i.test(value))return'table';
@@ -64,7 +66,7 @@ function safeCss(css: string, rewrite: (path: string) => string | null): string 
 }
 export function sanitizeStylesheet(css:string,sourcePath:string,assetUrl:(path:string)=>string|null):string{const base=sourcePath.includes('/')?sourcePath.slice(0,sourcePath.lastIndexOf('/')):'';return safeCss(css,value=>{const path=normalizeAssetPath(base,value);return path?assetUrl(path):null})}
 
-export function sanitizeDocument(source: string, entryPath: string, assetUrl: (path: string) => string | null): SanitizedDocument {
+export function sanitizeDocument(source: string, entryPath: string, assetUrl: (path: string) => string | null, preferredTitle?:string): SanitizedDocument {
   const entryDir = entryPath.includes('/') ? entryPath.slice(0, entryPath.lastIndexOf('/')) : '';
   const $source = cheerio.load(source),sourceTitle=$source('title').first().text().replace(/\s+/g,' ').trim();
   const rewrite = (value: string): string | null => { const path = normalizeAssetPath(entryDir, value); return path ? assetUrl(path) : null; };
@@ -96,8 +98,8 @@ export function sanitizeDocument(source: string, entryPath: string, assetUrl: (p
     blocks.push({ id, ordinal: blocks.length, type, text, ...(visual?{visual}:{}), start: offset, end: offset + text.length }); offset += text.length + 2;
   });
   const canonicalText = blocks.map(block => block.text).filter(Boolean).join('\n\n');
-  const title = sourceTitle || $('h1').first().text().trim() || entryPath.split('/').pop()?.replace(/\.html?$/i, '') || 'Untitled';
-  cleaned = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">${$('head link[rel="stylesheet"][href]').toString()}<style>${styles}\n${READER_CSS}\n${MOVE_READER_CSS}\n${ACADEMIC_READER_CSS}</style></head><body>${$('body').html() ?? $.root().html()}<script nonce="__AFTERDRAFT_NONCE__">${BRIDGE}</script></body></html>`;
+  const title = preferredTitle?.replace(/\s+/g,' ').trim() || sourceTitle || $('h1').first().text().trim() || entryPath.split('/').pop()?.replace(/\.html?$/i, '') || 'Untitled';
+  cleaned = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeTitle(title)}</title>${$('head link[rel="stylesheet"][href]').toString()}<style>${styles}\n${READER_CSS}\n${MOVE_READER_CSS}\n${ACADEMIC_READER_CSS}</style></head><body>${$('body').html() ?? $.root().html()}<script nonce="__AFTERDRAFT_NONCE__">${BRIDGE}</script></body></html>`;
   return { html: cleaned, title, canonicalText, blocks };
 }
 
