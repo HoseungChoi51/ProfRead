@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from '../config.js';
-import { schema } from './schema.js';
+import { createImportJobsTableSql, schema } from './schema.js';
 import { isUtf16Boundary } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
 
@@ -161,6 +161,32 @@ if(!migration15Applied){
     db.prepare('INSERT INTO migrations(version,applied_at)VALUES(15,?)').run(new Date().toISOString());
     db.exec('COMMIT');
   }catch(error){db.exec('ROLLBACK');throw error}
+}
+
+const migration16Applied=db.prepare('SELECT 1 FROM migrations WHERE version=16').get();
+if(!migration16Applied){
+  db.exec('PRAGMA foreign_keys=OFF');
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    db.exec(createImportJobsTableSql('import_jobs_v16',false));
+    db.exec(`INSERT INTO import_jobs_v16(
+      id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,target_document_id,
+      entry_path,entry_choices_json,status,stage,progress,stages_json,warnings_json,result_json,provenance_json,
+      ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference,call_count,qa_status,cancel_requested,
+      document_id,document_version_id,error,created_at,updated_at,started_at,completed_at)
+      SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,target_document_id,
+      entry_path,entry_choices_json,status,stage,progress,stages_json,warnings_json,result_json,provenance_json,
+      ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference,call_count,qa_status,cancel_requested,
+      document_id,document_version_id,error,created_at,updated_at,started_at,completed_at FROM import_jobs`);
+    db.exec('DROP TABLE import_jobs');
+    db.exec('ALTER TABLE import_jobs_v16 RENAME TO import_jobs');
+    db.exec('CREATE INDEX IF NOT EXISTS import_jobs_created_at_idx ON import_jobs(created_at DESC)');
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(16,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+  finally{db.exec('PRAGMA foreign_keys=ON')}
+  const foreignKeyErrors=db.prepare('PRAGMA foreign_key_check').all();
+  if(foreignKeyErrors.length)throw new Error('Migration 16 failed foreign-key validation');
 }
 
 // In-memory provider controllers cannot survive a process restart. Mark every

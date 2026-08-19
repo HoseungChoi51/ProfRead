@@ -13,13 +13,13 @@ semantic highlights, revisioned article editing, a source-grounded Document
 Writer, semantic summary review, search, and HTML/Markdown/PDF export.
 
 The asynchronous [academic importer](docs/academic-importer.md) adds arXiv,
-DOCX, and LaTeX conversion through an isolated worker, with deterministic
+standalone PDF, public article URL/DOI, DOCX, and LaTeX conversion through an isolated worker, with deterministic
 diagnostics and optional bounded LLM/VLM review.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for the full
 architecture, interaction contracts, milestones, and acceptance tests.
 The current feature and migration details are in the
-[v0.4.0 release notes](docs/releases/v0.4.0.md).
+[v0.5.0 release notes](docs/releases/v0.5.0.md).
 
 ## Product direction
 

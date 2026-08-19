@@ -11,21 +11,21 @@ import { registerImportJobLifecycle } from '../routes/import-jobs.js';
 import { assetMime, extractAcademicBundle, stableAssetId, type AcademicManifest, type ExtractedBundle } from './bundle.js';
 import { pdfReferenceEvidence } from './pdf-reference.js';
 import { publishAcademicImport, type StagedAcademicResult } from './persistence.js';
-import { AcademicWorkerError, convertDocx, convertTex } from './worker-client.js';
+import { AcademicWorkerError, convertDocx, convertPdf, convertTex } from './worker-client.js';
+import type { AcademicSourceKind } from './source-kind.js';
 
-type SourceKind='html'|'docx'|'tex'|'tex-zip'|'arxiv';
-export interface AcademicJob{ id:string;source_kind:SourceKind;source_name:string;source_mime_type:string;source_path:string;source_hash:string;companion_pdf_path:string|null;entry_path:string|null;status:string;ai_review_enabled:number;max_calls:number;review_concurrency:number;auto_apply:number;source_reference:number }
+export interface AcademicJob{ id:string;source_kind:AcademicSourceKind;source_name:string;source_mime_type:string;source_path:string;source_hash:string;companion_pdf_path:string|null;entry_path:string|null;status:string;ai_review_enabled:number;max_calls:number;review_concurrency:number;auto_apply:number;source_reference:number }
 export interface AcademicReviewContext{job:AcademicJob;bundle:ExtractedBundle;staged:StagedAcademicResult;previewPath:string;signal:AbortSignal}
 export interface AcademicReviewOutcome{status:'completed'|'partial'|'failed';callCount:number}
 type ReviewHook=(context:AcademicReviewContext)=>Promise<AcademicReviewOutcome>;
 type SourceHook=(job:AcademicJob,directory:string,signal:AbortSignal)=>Promise<ExtractedBundle>;
 
 let reviewHook:ReviewHook|undefined;
-const sourceHooks=new Map<SourceKind,SourceHook>(),queued=new Set<string>(),controllers=new Map<string,AbortController>();
+const sourceHooks=new Map<AcademicSourceKind,SourceHook>(),queued=new Set<string>(),controllers=new Map<string,AbortController>();
 let draining=false,started=false;
 
 export function registerAcademicReviewHook(hook:ReviewHook):void{reviewHook=hook}
-export function registerAcademicSourceHook(kind:SourceKind,hook:SourceHook):void{sourceHooks.set(kind,hook)}
+export function registerAcademicSourceHook(kind:AcademicSourceKind,hook:SourceHook):void{sourceHooks.set(kind,hook)}
 
 class AcademicEntryRequiredError extends Error{constructor(readonly entryChoices:string[]){super('Choose an article entry before conversion can continue')}}
 
@@ -74,6 +74,7 @@ async function convert(job:AcademicJob,directory:string,signal:AbortSignal):Prom
   const hook=sourceHooks.get(job.source_kind);if(hook)return hook(job,directory,signal);
   if(job.source_kind==='html')return extname(job.source_name).toLowerCase()==='.zip'||job.source_mime_type==='application/zip'?htmlZipBundle(job,directory):htmlBundle(job,directory);
   if(job.source_kind==='docx'){const archive=await convertDocx(job.source_path,job.source_name,Boolean(job.ai_review_enabled&&job.source_reference),signal);return extractAcademicBundle(archive,directory,job.source_hash)}
+  if(job.source_kind==='pdf'){const archive=await convertPdf(job.source_path,job.source_name,Boolean(job.ai_review_enabled&&job.source_reference),signal);return extractAcademicBundle(archive,directory,job.source_hash)}
   if(job.source_kind==='tex'||job.source_kind==='tex-zip'){const archive=await convertTex(job.source_path,job.source_name,job.entry_path??undefined,signal);return extractAcademicBundle(archive,directory,job.source_hash)}
   throw new Error(`No converter is registered for ${job.source_kind}`);
 }
@@ -106,7 +107,8 @@ async function run(jobId:string):Promise<void>{
     stage(jobId,'conversion','Convert and inventory source','running',0.15);const bundle=await attachCompanionReference(job,await convert(job,bundleDirectory,controller.signal),bundleDirectory,controller.signal);
     stage(jobId,'conversion','Convert and inventory source','completed',0.55);stage(jobId,'deterministic-review','Validate and normalize output','running',0.65);
     const {staged,previewPath}=await prepare(job,bundle),warnings=bundle.manifest.warnings??[];insertWarnings(jobId,warnings);
-    db.prepare('UPDATE import_jobs SET result_json=?,warnings_json=?,provenance_json=?,updated_at=? WHERE id=?').run(JSON.stringify(staged),JSON.stringify(warnings),JSON.stringify({source:bundle.manifest.source,converter:bundle.manifest.converter??null,inventory:bundle.manifest.inventory??null}),now(),jobId);
+    const output=bundle.manifest.output as{title?:unknown}|undefined,documentTitle=typeof output?.title==='string'&&output.title.trim()?output.title.trim():null;
+    db.prepare('UPDATE import_jobs SET result_json=?,warnings_json=?,provenance_json=?,updated_at=? WHERE id=?').run(JSON.stringify(staged),JSON.stringify(warnings),JSON.stringify({source:bundle.manifest.source,converter:bundle.manifest.converter??null,inventory:bundle.manifest.inventory??null,documentTitle}),now(),jobId);
     stage(jobId,'deterministic-review','Validate and normalize output','completed',0.78);
     if(job.ai_review_enabled&&reviewHook){stage(jobId,'model-review','Model-assisted visual and semantic review','running',0.82);db.prepare("UPDATE import_jobs SET qa_status='running',updated_at=? WHERE id=?").run(now(),jobId);try{const outcome=await reviewHook({job,bundle,staged,previewPath,signal:controller.signal});if(controller.signal.aborted)throw new Error('Academic import was cancelled');db.prepare('UPDATE import_jobs SET qa_status=?,call_count=?,updated_at=? WHERE id=?').run(outcome.status,outcome.callCount,now(),jobId);stage(jobId,'model-review','Model-assisted visual and semantic review',outcome.status==='failed'?'failed':'completed',0.94)}catch(error){if(controller.signal.aborted)throw error;db.prepare("UPDATE import_jobs SET qa_status='failed',updated_at=? WHERE id=?").run(now(),jobId);stage(jobId,'model-review','Model-assisted visual and semantic review','failed',0.94,error instanceof Error?error.message:'Model review failed')}}
     else if(job.ai_review_enabled)db.prepare("UPDATE import_jobs SET qa_status='not-run',updated_at=? WHERE id=?").run(now(),jobId);

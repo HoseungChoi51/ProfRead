@@ -1,3 +1,41 @@
+export function createImportJobsTableSql(name='import_jobs',ifNotExists=true):string{
+  if(!/^[a-z][a-z0-9_]*$/i.test(name))throw new Error('Invalid import-jobs table name');
+  return `CREATE TABLE ${ifNotExists?'IF NOT EXISTS ':''}${name} (
+ id TEXT PRIMARY KEY,
+ source_kind TEXT NOT NULL CHECK(source_kind IN ('html','docx','tex','tex-zip','arxiv','pdf','url')),
+ source_name TEXT NOT NULL,
+ source_mime_type TEXT NOT NULL,
+ source_path TEXT NOT NULL,
+ source_hash TEXT NOT NULL,
+ companion_pdf_path TEXT,
+ target_document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+ entry_path TEXT,
+ entry_choices_json TEXT NOT NULL DEFAULT '[]',
+ status TEXT NOT NULL CHECK(status IN ('queued','converting','review-ready','finalizing','published','failed','cancelled')),
+ stage TEXT NOT NULL,
+ progress REAL NOT NULL DEFAULT 0,
+ stages_json TEXT NOT NULL DEFAULT '[]',
+ warnings_json TEXT NOT NULL DEFAULT '[]',
+ result_json TEXT,
+ provenance_json TEXT NOT NULL DEFAULT '{}',
+ ai_review_enabled INTEGER NOT NULL DEFAULT 1,
+ max_calls INTEGER NOT NULL DEFAULT 30,
+ review_concurrency INTEGER NOT NULL DEFAULT 2,
+ auto_apply INTEGER NOT NULL DEFAULT 0,
+ source_reference INTEGER NOT NULL DEFAULT 1,
+ call_count INTEGER NOT NULL DEFAULT 0,
+ qa_status TEXT NOT NULL DEFAULT 'not-run',
+ cancel_requested INTEGER NOT NULL DEFAULT 0,
+ document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+ document_version_id TEXT REFERENCES document_versions(id) ON DELETE SET NULL,
+ error TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ started_at TEXT,
+ completed_at TEXT
+);`;
+}
+
 export const schema = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -60,40 +98,7 @@ CREATE TABLE IF NOT EXISTS summary_reviews (
  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','applied','superseded','failed','cancelled')),
  created_at TEXT NOT NULL, applied_at TEXT);
 CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, document_version_id TEXT REFERENCES document_versions(id) ON DELETE CASCADE, status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0, result_json TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS import_jobs (
- id TEXT PRIMARY KEY,
- source_kind TEXT NOT NULL CHECK(source_kind IN ('html','docx','tex','tex-zip','arxiv')),
- source_name TEXT NOT NULL,
- source_mime_type TEXT NOT NULL,
- source_path TEXT NOT NULL,
- source_hash TEXT NOT NULL,
- companion_pdf_path TEXT,
- target_document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
- entry_path TEXT,
- entry_choices_json TEXT NOT NULL DEFAULT '[]',
- status TEXT NOT NULL CHECK(status IN ('queued','converting','review-ready','finalizing','published','failed','cancelled')),
- stage TEXT NOT NULL,
- progress REAL NOT NULL DEFAULT 0,
- stages_json TEXT NOT NULL DEFAULT '[]',
- warnings_json TEXT NOT NULL DEFAULT '[]',
- result_json TEXT,
- provenance_json TEXT NOT NULL DEFAULT '{}',
- ai_review_enabled INTEGER NOT NULL DEFAULT 1,
- max_calls INTEGER NOT NULL DEFAULT 30,
- review_concurrency INTEGER NOT NULL DEFAULT 2,
- auto_apply INTEGER NOT NULL DEFAULT 0,
- source_reference INTEGER NOT NULL DEFAULT 1,
- call_count INTEGER NOT NULL DEFAULT 0,
- qa_status TEXT NOT NULL DEFAULT 'not-run',
- cancel_requested INTEGER NOT NULL DEFAULT 0,
- document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
- document_version_id TEXT REFERENCES document_versions(id) ON DELETE SET NULL,
- error TEXT,
- created_at TEXT NOT NULL,
- updated_at TEXT NOT NULL,
- started_at TEXT,
- completed_at TEXT
-);
+${createImportJobsTableSql()}
 CREATE TABLE IF NOT EXISTS import_findings (
  id TEXT PRIMARY KEY,
  import_job_id TEXT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,

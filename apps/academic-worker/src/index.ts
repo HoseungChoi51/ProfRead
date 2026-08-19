@@ -7,7 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { convertDocx, convertTex, type OperationResult } from './convert.js';
 import { WorkerError, errorMessage } from './errors.js';
 import { renderPdf } from './pdf.js';
+import { convertPdf } from './pdf-convert.js';
 import { chromiumPath, renderHtml } from './render.js';
+import { convertJats } from './jats.js';
 
 const defaultBodyLimit = 100 * 1024 * 1024;
 const port = Number(process.env.ACADEMIC_WORKER_PORT ?? 4312), concurrency = Number(process.env.ACADEMIC_WORKER_CONCURRENCY ?? 1);
@@ -22,13 +24,13 @@ async function archive(response: ServerResponse, result: OperationResult): Promi
     await pipeline(createReadStream(result.archivePath), response);
   } finally { await rm(result.root, { recursive: true, force: true }); }
 }
-async function health(response: ServerResponse): Promise<void> { const tools = { pandoc: await commandAvailable('pandoc'), latexml: await commandAvailable('latexml'), latexmlpost: await commandAvailable('latexmlpost'), libreoffice: await commandAvailable('libreoffice'), pdftoppm: await commandAvailable('pdftoppm'), zip: await commandAvailable('zip'), chromium: Boolean(await chromiumPath()) }; json(response, tools.pandoc && tools.zip && tools.chromium ? 200 : 503, { status: tools.pandoc && tools.zip && tools.chromium ? 'ok' : 'degraded', active, concurrency, tools }); }
+async function health(response: ServerResponse): Promise<void> { const tools = { pandoc: await commandAvailable('pandoc'), latexml: await commandAvailable('latexml'), latexmlpost: await commandAvailable('latexmlpost'), libreoffice: await commandAvailable('libreoffice'), pdfinfo:await commandAvailable('pdfinfo'),pdftotext:await commandAvailable('pdftotext'),pdftohtml:await commandAvailable('pdftohtml'),pdfimages:await commandAvailable('pdfimages'),pdffonts:await commandAvailable('pdffonts'),pdftoppm: await commandAvailable('pdftoppm'), zip: await commandAvailable('zip'), chromium: Boolean(await chromiumPath()) },ready=Object.values(tools).every(Boolean); json(response, ready ? 200 : 503, { status: ready ? 'ok' : 'degraded', active, concurrency, tools }); }
 
 export function createAcademicWorker() {
   return createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://academic-worker');
     if (request.method === 'GET' && url.pathname === '/health') return health(response);
-    if (request.method !== 'POST' || !['/v1/convert/docx', '/v1/convert/tex', '/v1/render', '/v1/render/pdf'].includes(url.pathname)) return json(response, 404, { error: 'Not found' });
+    if (request.method !== 'POST' || !['/v1/convert/docx', '/v1/convert/tex', '/v1/convert/jats', '/v1/convert/pdf', '/v1/render', '/v1/render/pdf'].includes(url.pathname)) return json(response, 404, { error: 'Not found' });
     if (active >= concurrency) { response.setHeader('retry-after', '5'); return json(response, 429, { error: 'Worker is busy', code: 'worker_busy' }); }
     active++; const controller = new AbortController();
     request.once('aborted', () => controller.abort());
@@ -37,6 +39,8 @@ export function createAcademicWorker() {
       const input = await body(request); let result: OperationResult;
       if (url.pathname === '/v1/convert/docx') result = await convertDocx(input, { filename: url.searchParams.get('filename') ?? 'document.docx', includeReference: url.searchParams.get('reference') === 'true', referencePages: Number(url.searchParams.get('referencePages') ?? 60), signal: controller.signal });
       else if (url.pathname === '/v1/convert/tex') result = await convertTex(input, { filename: url.searchParams.get('filename') ?? 'source.tex', ...(url.searchParams.get('entry') ? { entry: url.searchParams.get('entry')! } : {}), signal: controller.signal });
+      else if (url.pathname === '/v1/convert/jats') result = await convertJats(input, { filename: url.searchParams.get('filename') ?? 'article.xml', signal: controller.signal });
+      else if (url.pathname === '/v1/convert/pdf') result = await convertPdf(input, { filename: url.searchParams.get('filename') ?? 'paper.pdf', includeReference: url.searchParams.get('reference') === 'true', referencePages: Number(url.searchParams.get('referencePages') ?? 60), signal: controller.signal });
       else if (url.pathname === '/v1/render/pdf') result = await renderPdf(input, { filename: url.searchParams.get('filename') ?? 'source.pdf', pages: Number(url.searchParams.get('pages') ?? 60), signal: controller.signal });
       else result = await renderHtml(input, { maxObjects: Number(url.searchParams.get('maxObjects') ?? 120), signal: controller.signal });
       await archive(response, result);
@@ -45,4 +49,4 @@ export function createAcademicWorker() {
   });
 }
 const main = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (main) { const server = createAcademicWorker(); server.requestTimeout = 10 * 60_000; server.headersTimeout = 30_000; server.listen(port, '0.0.0.0', () => process.stdout.write(`academic-worker listening on ${port}\n`)); }
+if (main) { const server = createAcademicWorker(); server.requestTimeout = 20 * 60_000; server.headersTimeout = 30_000; server.listen(port, '0.0.0.0', () => process.stdout.write(`academic-worker listening on ${port}\n`)); }

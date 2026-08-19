@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundedTriageOutline, planImageBatches, planOutlineChunks, selectRenderEvidence, type EvidenceItem } from './review.js';
+import { boundedTriageOutline, planImageBatches, planOutlineChunks, selectRenderEvidence, selectSourceEvidence, type EvidenceItem } from './review.js';
 
 describe('academic review coverage planning',()=>{
   it('reports every outline cap instead of silently dropping blocks',()=>{
@@ -27,5 +27,10 @@ describe('academic review coverage planning',()=>{
     const files:any[]=[{path:'renders/narrow.png',storagePath:'/tmp/narrow.png',bytes:80,sha256:'a'},{path:'objects/narrow/q1.png',storagePath:'/tmp/q1.png',bytes:40,sha256:'b'}];
     const selected=selectRenderEvidence({views:[{viewport:{name:'narrow'},screenshots:['renders/narrow.png'],objects:[{ref:'q1',blockId:'table-1',tag:'table'}],objectScreenshots:[{ref:'q1',path:'objects/narrow/q1.png'}]}]},files);
     expect(selected).toEqual(expect.arrayContaining([expect.objectContaining({kind:'overview',bytes:80}),expect.objectContaining({kind:'object',blockId:'table-1',tag:'table',bytes:40})]));
+  });
+
+  it('uses published PDF page fallbacks as source evidence without duplicate reference files',()=>{
+    const files:any[]=[{path:'assets/pdf-page-001.jpg',storagePath:'/tmp/page-1.jpg',bytes:120,sha256:'a'},{path:'assets/pdf-object-p001-001.jpg',storagePath:'/tmp/object.jpg',bytes:80,sha256:'b'}];
+    expect(selectSourceEvidence(files)).toEqual([expect.objectContaining({kind:'source-page',storagePath:'/tmp/page-1.jpg',mimeType:'image/jpeg',bytes:120})]);
   });
 });

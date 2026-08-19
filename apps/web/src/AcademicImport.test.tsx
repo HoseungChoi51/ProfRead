@@ -3,13 +3,18 @@ import {describe,expect,it} from 'vitest';
 import {parseAppRoute} from './App.js';
 import {
   ImportFindingCard,
+  academicCompanionPdfAllowed,
   academicImportAccept,
+  academicUploadSourceKind,
   availableImportJobActions,
   clampImportCallLimit,
+  importFallbackGuidance,
   importJobStageLabel,
+  normalizeAcademicWebReference,
   normalizeImportFinding,
   normalizeImportDialogPolicy,
   normalizeImportJobs,
+  normalizeImportSourceSummary,
 } from './AcademicImport.js';
 import {academicImportTasks,isAcademicImportPrompt,isActiveAcademicImportPrompt,normalizeAcademicPolicy} from './Settings.js';
 
@@ -25,6 +30,26 @@ describe('academic import navigation and input policy',()=>{
     expect(academicImportAccept).toContain('.tex');
     expect(academicImportAccept).toContain('.zip');
     expect(academicImportAccept).toContain('.html');
+    expect(academicImportAccept).toContain('.pdf');
+    expect(academicImportAccept).toContain('application/pdf');
+  });
+
+  it('routes a primary PDF separately and only offers companions for TeX inputs',()=>{
+    expect(academicUploadSourceKind({name:'paper.pdf',type:''})).toBe('pdf');
+    expect(academicUploadSourceKind({name:'paper.bin',type:'application/pdf'})).toBe('pdf');
+    expect(academicUploadSourceKind({name:'paper.docx',type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'})).toBe('upload');
+    expect(academicCompanionPdfAllowed({name:'main.tex'})).toBe(true);
+    expect(academicCompanionPdfAllowed({name:'project.ZIP'})).toBe(true);
+    expect(academicCompanionPdfAllowed({name:'paper.pdf'})).toBe(false);
+    expect(academicCompanionPdfAllowed(null)).toBe(false);
+  });
+
+  it('accepts public HTTPS article URLs and bare DOI references',()=>{
+    expect(normalizeAcademicWebReference(' 10.1515/nanoph-2023-0852 ')).toBe('10.1515/nanoph-2023-0852');
+    expect(normalizeAcademicWebReference('https://publisher.example/paper')).toBe('https://publisher.example/paper');
+    expect(normalizeAcademicWebReference('http://publisher.example/paper')).toBeNull();
+    expect(normalizeAcademicWebReference('https://user:secret@publisher.example/paper')).toBeNull();
+    expect(normalizeAcademicWebReference('not a DOI')).toBeNull();
   });
 
   it('enforces the per-import model-call ceiling',()=>{
@@ -45,11 +70,29 @@ describe('academic import job presentation',()=>{
     expect(normalizeImportJobs({jobs:[{
       id:'job-1',source_name:'Draft.docx',status:'ai_review',progress:63,
       warning_count:4,finding_count:2,calls_used:7,max_calls:30,document_id:null,
+      source_kind:'pdf',document_title:'A discovered paper title',
     }]})).toEqual([expect.objectContaining({
       id:'job-1',sourceName:'Draft.docx',stage:'ai-review',progress:63,
       warningCount:4,findingCount:2,callsUsed:7,maxCalls:30,
+      sourceKind:'pdf',documentTitle:'A discovered paper title',
     })]);
     expect(importJobStageLabel('ai-review')).toBe('AI/VLM review');
+    expect(importJobStageLabel('fetching')).toBe('Fetching publication');
+  });
+
+  it('summarizes PDF and publisher provenance without exposing internal paths',()=>{
+    expect(normalizeImportSourceSummary({source:{kind:'pdf',pageCount:12,convertedPageCount:12,textMode:'native'}},'pdf')).toEqual({label:'PDF source',detail:'12/12 pages converted · native text',origin:null});
+    expect(normalizeImportSourceSummary({source:{kind:'publisher-html',requestedUrl:'https://doi.org/10.1/example',finalUrl:'https://publisher.example/full',doi:'10.1/example',assetCount:7,adapter:'jats',directFailure:'Publisher page fell back to a structured source.'}},'url')).toEqual({
+      label:'Web · publisher.example',
+      detail:'7 assets localized · DOI 10.1/example · jats adapter · fallback used',
+      origin:'https://publisher.example/full',
+    });
+  });
+
+  it('provides actionable source-specific failure help',()=>{
+    expect(importFallbackGuidance('url')).toContain('upload the paper PDF');
+    expect(importFallbackGuidance('pdf')).toContain('text-searchable PDF');
+    expect(importFallbackGuidance('docx')).toBeNull();
   });
 
   it('gates job actions by persisted state',()=>{

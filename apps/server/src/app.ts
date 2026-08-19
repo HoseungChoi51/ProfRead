@@ -18,9 +18,11 @@ import { registerEditRoutes } from './routes/edits.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import { registerWriterRoutes } from './routes/writer.js';
 import { registerImportJobRoutes } from './routes/import-jobs.js';
-import { startAcademicImportRunner } from './academic/runner.js';
+import { registerAcademicSourceHook, startAcademicImportRunner } from './academic/runner.js';
 import { installAcademicReviewHook } from './academic/review.js';
 import { installArxivSourceHook } from './academic/arxiv-source.js';
+import { createPublishedSourceHook } from './academic/published-source.js';
+import { convertPdf } from './academic/worker-client.js';
 
 export async function buildApp() {
   const app=Fastify({logger:true,bodyLimit:config.limits.zipBytes+1024});
@@ -32,7 +34,7 @@ export async function buildApp() {
   registerAuth(app);
   app.addHook('preHandler',async(request,reply)=>{if(!request.url.startsWith('/api/')||request.url==='/api/auth/login')return;await authenticate(request,reply);if(!reply.sent)await requireCsrf(request,reply);});
   seedModelSettings();registerDocumentRoutes(app);registerImportJobRoutes(app);registerLibraryRoutes(app);registerThreadRoutes(app);registerWriterRoutes(app);registerRunRoutes(app);registerSettingsRoutes(app);registerKnowledgeRoutes(app);registerExportRoutes(app);registerEditRoutes(app);
-  installArxivSourceHook();installAcademicReviewHook();startAcademicImportRunner();
+  installArxivSourceHook();registerAcademicSourceHook('url',createPublishedSourceHook({convertPdf}));installAcademicReviewHook();startAcademicImportRunner();
   app.get('/health',async()=>({status:'ok'}));
   if(existsSync(join(config.webDir,'index.html'))){await app.register(staticFiles,{root:config.webDir,prefix:'/',wildcard:false});app.setNotFoundHandler(async(request,reply)=>request.url.startsWith('/api/')?reply.code(404).send({error:'Not found'}):reply.type('text/html').sendFile('index.html'));}
   app.setErrorHandler((error:Error & {statusCode?:number},request,reply)=>{request.log.error(error);if(!reply.sent)reply.code(error.statusCode??500).send({error:error.statusCode&&error.statusCode<500?error.message:'Internal server error'});});

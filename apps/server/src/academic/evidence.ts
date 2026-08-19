@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as cheerio from 'cheerio';
-import { sanitizeStylesheet } from '../ingest/sanitize.js';
+import { sanitizeStylesheet, sanitizeSvgAsset } from '../ingest/sanitize.js';
 import type { StagedAcademicResult } from './persistence.js';
 
 export interface AcademicOutlineItem {
@@ -49,7 +49,8 @@ export async function writeSelfContainedPreview(
   }
   const encoded = new Map<string, string>();
   for (const asset of staged.assets.filter(item => item.mimeType !== 'text/css')) {
-    const bytes = await readFile(asset.storagePath);
+    let bytes = await readFile(asset.storagePath);
+    if(asset.mimeType==='image/svg+xml'){const safe=sanitizeSvgAsset(bytes.toString('utf8'));if(!safe)continue;bytes=Buffer.from(safe)}
     encoded.set(asset.sourcePath, dataUrl(asset.mimeType, bytes));
   }
   for (const asset of staged.assets.filter(item => item.mimeType === 'text/css')) {

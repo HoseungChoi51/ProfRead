@@ -41,6 +41,26 @@ function docxUpload(source:Buffer):{body:Buffer;contentType:string}{
   return{body,contentType:`multipart/form-data; boundary=${boundary}`};
 }
 
+function pdfUpload(source:Buffer):{body:Buffer;contentType:string}{
+  const boundary=`afterdraft-${randomUUID()}`,body=Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="sourceKind"\r\n\r\npdf\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="aiReview"\r\n\r\n${JSON.stringify({enabled:false,sourceReference:true})}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="paper.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    source,Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return{body,contentType:`multipart/form-data; boundary=${boundary}`};
+}
+
+function webUpload(sourceUrl:string):{body:Buffer;contentType:string}{
+  const boundary=`afterdraft-${randomUUID()}`,body=Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="sourceKind"\r\n\r\nurl\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="sourceUrl"\r\n\r\n${sourceUrl}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="aiReview"\r\n\r\n${JSON.stringify({enabled:false})}\r\n`),
+    Buffer.from(`--${boundary}--\r\n`),
+  ]);
+  return{body,contentType:`multipart/form-data; boundary=${boundary}`};
+}
+
 function texUpload(source:Buffer):{body:Buffer;contentType:string}{
   const boundary=`afterdraft-${randomUUID()}`,body=Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="sourceKind"\r\n\r\nupload\r\n`),
@@ -72,7 +92,7 @@ function workerBundle(sourceHash:string,durationMs:number):Buffer{
     'provenance/converter.json':strToU8('{"private":"diagnostic"}'),
   };
   const inventory=Object.entries(files).filter(([path])=>!path.startsWith('provenance/')).map(([path,bytes])=>({path,bytes:bytes.byteLength,sha256:createHash('sha256').update(bytes).digest('hex')}));
-  files['manifest.json']=strToU8(JSON.stringify({schemaVersion:1,operation:'convert',source:{kind:'docx',sha256:sourceHash},output:{entryPath:'document.html'},converter:{selected:'pandoc',attempts:[{durationMs}]},warnings:[],files:inventory}));
+  files['manifest.json']=strToU8(JSON.stringify({schemaVersion:1,operation:'convert',source:{kind:'docx',sha256:sourceHash},output:{entryPath:'document.html',title:'Worker paper'},converter:{selected:'pandoc',attempts:[{durationMs}]},warnings:[],files:inventory}));
   return Buffer.from(zipSync(files));
 }
 
@@ -122,6 +142,26 @@ describe('academic HTML import lifecycle',()=>{
     const stored=row<{status:string;document_id:string;document_version_id:string;sanitized_html_path:string}>('SELECT j.status,j.document_id,j.document_version_id,v.sanitized_html_path FROM import_jobs j JOIN document_versions v ON v.id=j.document_version_id WHERE j.id=?',jobId);
     expect(stored).toMatchObject({status:'published',document_id:result.documentId,document_version_id:result.versionId});
     expect(await readFile(stored!.sanitized_html_path,'utf8')).toContain(marker);
+  });
+
+  it('sniffs, reviews, and publishes a standalone PDF without enabling unused source evidence',async()=>{
+    let captured:{source_reference:number;source_mime_type:string}|undefined;
+    registerAcademicSourceHook('pdf',async(job,directory)=>{captured={source_reference:job.source_reference,source_mime_type:job.source_mime_type};return extractAcademicBundle(workerBundle(job.source_hash,1),directory,job.source_hash)});
+    const headers=await authenticatedHeaders(),invalid=pdfUpload(Buffer.from('not a pdf'));
+    const rejected=await app.inject({method:'POST',url:'/api/import-jobs',headers:{...headers,'content-type':invalid.contentType},payload:invalid.body});expect(rejected.statusCode,rejected.body).toBe(400);expect(rejected.body).toContain('not a valid PDF');
+    const upload=pdfUpload(Buffer.from('%PDF-1.7\nstandalone-fixture')),created=await app.inject({method:'POST',url:'/api/import-jobs',headers:{...headers,'content-type':upload.contentType},payload:upload.body});expect(created.statusCode,created.body).toBe(202);
+    const jobId=JSON.parse(created.body).jobId as string;await waitForStatus(jobId,'review-ready');
+    const detail=JSON.parse((await app.inject({method:'GET',url:`/api/import-jobs/${jobId}`,headers:{cookie:headers.cookie}})).body);expect(detail).toMatchObject({sourceKind:'pdf',documentTitle:'Worker paper',qaStatus:'skipped',aiReview:{enabled:false,sourceReference:false}});expect(captured).toEqual({source_reference:0,source_mime_type:'application/pdf'});
+    const published=await app.inject({method:'POST',url:`/api/import-jobs/${jobId}/finalize`,headers});expect(published.statusCode,published.body).toBe(200);const result=JSON.parse(published.body);expect(row<{title:string}>('SELECT title FROM documents WHERE id=?',result.documentId)?.title).toBe('Worker paper');
+  });
+
+  it('accepts DOI/web jobs but rejects non-HTTPS and credential-bearing locators',async()=>{
+    let locator='';registerAcademicSourceHook('url',async(job,directory)=>{locator=(await readFile(job.source_path,'utf8')).trim();return extractAcademicBundle(workerBundle(job.source_hash,1),directory,job.source_hash)});
+    const headers=await authenticatedHeaders();
+    for(const reference of ['http://publisher.example/paper','https://user:secret@publisher.example/paper','https://publisher.example:8443/paper','https://publisher.example/paper?X-Amz-Signature=secret']){const upload=webUpload(reference),response=await app.inject({method:'POST',url:'/api/import-jobs',headers:{...headers,'content-type':upload.contentType},payload:upload.body});expect(response.statusCode,response.body).toBe(400)}
+    const upload=webUpload('10.1515/nanoph-2023-0852'),created=await app.inject({method:'POST',url:'/api/import-jobs',headers:{...headers,'content-type':upload.contentType},payload:upload.body});expect(created.statusCode,created.body).toBe(202);const jobId=JSON.parse(created.body).jobId as string;await waitForStatus(jobId,'review-ready');
+    const detail=JSON.parse((await app.inject({method:'GET',url:`/api/import-jobs/${jobId}`,headers:{cookie:headers.cookie}})).body);expect(detail).toMatchObject({sourceKind:'url',sourceName:'10.1515/nanoph-2023-0852',documentTitle:'Worker paper'});expect(locator).toBe('10.1515/nanoph-2023-0852');
+    const directPdf=webUpload('https://publisher.example/article/paper.pdf'),direct=await app.inject({method:'POST',url:'/api/import-jobs',headers:{...headers,'content-type':directPdf.contentType},payload:directPdf.body});expect(direct.statusCode,direct.body).toBe(202);const directId=JSON.parse(direct.body).jobId as string;await waitForStatus(directId,'review-ready');expect(locator).toBe('https://publisher.example/article/paper.pdf');
   });
 
   it('applies an accepted corroborated presentation repair without changing scholarly content',async()=>{

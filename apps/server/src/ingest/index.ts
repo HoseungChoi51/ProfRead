@@ -4,7 +4,7 @@ import { dirname, extname, join } from 'node:path';
 import { nanoid } from 'nanoid';
 import { config } from '../config.js';
 import { db, now, row } from '../db/index.js';
-import { sanitizeDocument, sanitizeStylesheet } from './sanitize.js';
+import { sanitizeDocument, sanitizeStylesheet, sanitizeSvgAsset } from './sanitize.js';
 import { readSafeZip } from './zip.js';
 import { utf16ContextWindow, type AnchorContextWindow } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
@@ -34,7 +34,7 @@ export async function importSource(input: { buffer: Buffer; filename: string; mi
 
   const versionId = nanoid(); const documentId = input.documentId ?? nanoid(); const directory = join(config.dataDir, 'documents', versionId);
   const assetIds = new Map<string, string>();
-  for (const path of files.keys()) if (path !== entryPath && mimeTypes[extname(path).toLowerCase()]) {const extension=extname(path).toLowerCase();if(!validAsset(extension,files.get(path)!))throw new Error(`Asset content does not match its declared type: ${path}`);assetIds.set(path, nanoid());}
+  for (const path of files.keys()) if (path !== entryPath && mimeTypes[extname(path).toLowerCase()]) {const extension=extname(path).toLowerCase(),content=files.get(path)!;if(!validAsset(extension,content))throw new Error(`Asset content does not match its declared type: ${path}`);if(extension==='.svg'){const safe=sanitizeSvgAsset(content.toString('utf8'));if(!safe)throw new Error(`SVG asset is invalid: ${path}`);files.set(path,Buffer.from(safe))}assetIds.set(path, nanoid());}
   for(const [path] of assetIds)if(extname(path).toLowerCase()==='.css')files.set(path,Buffer.from(sanitizeStylesheet(files.get(path)!.toString('utf8'),path,target=>assetIds.has(target)?`/api/assets/${versionId}/${assetIds.get(target)}`:null)));
   const parsed = sanitizeDocument(files.get(entryPath)!.toString('utf8'), entryPath, path => assetIds.has(path) ? `/api/assets/${versionId}/${assetIds.get(path)}` : null);
   await mkdir(join(directory, 'assets'), { recursive: true });

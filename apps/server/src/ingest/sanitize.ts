@@ -67,6 +67,15 @@ const allowedAttributes: sanitizeHtml.IOptions['allowedAttributes'] = {
   mi:['mathvariant','mathsize','mathcolor','mathbackground'],mn:['mathvariant','mathsize','mathcolor','mathbackground'],mo:['form','fence','separator','lspace','rspace','stretchy','symmetric','maxsize','minsize','largeop','movablelimits','accent','mathvariant','mathsize','mathcolor','mathbackground'],mtext:['mathvariant','mathsize','mathcolor','mathbackground'],ms:['lquote','rquote','mathvariant','mathsize','mathcolor','mathbackground'],mspace:['width','height','depth','linebreak'],mstyle:['scriptlevel','displaystyle','scriptsizemultiplier','scriptminsize','mathvariant','mathsize','mathcolor','mathbackground'],mpadded:['width','height','depth','lspace','voffset'],mfenced:['open','close','separators'],menclose:['notation'],mfrac:['linethickness','numalign','denomalign','bevelled'],munder:['accentunder'],mover:['accent'],munderover:['accent','accentunder'],mtable:['align','rowalign','columnalign','rowspacing','columnspacing','rowlines','columnlines','frame','framespacing','equalrows','equalcolumns','displaystyle','side','minlabelspacing'],mtr:['rowalign','columnalign'],mlabeledtr:['rowalign','columnalign'],mtd:['rowspan','columnspan','rowalign','columnalign'],maction:['actiontype','selection'],mglyph:['src','alt','width','height','valign'],
 };
 
+const safeSvgTags=['svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol'];
+const safeSvgAttributes: NonNullable<sanitizeHtml.IOptions['allowedAttributes']>={svg:allowedAttributes.svg!,path:allowedAttributes.path!,g:allowedAttributes.g!,circle:allowedAttributes.circle!,rect:allowedAttributes.rect!,line:allowedAttributes.line!,polyline:allowedAttributes.polyline!,polygon:allowedAttributes.polygon!,ellipse:allowedAttributes.ellipse!,text:allowedAttributes.text!,use:allowedAttributes.use!,symbol:['id','viewBox']};
+export function sanitizeSvgAsset(source:string):string|null{
+  const cleaned=sanitizeHtml(source,{allowedTags:safeSvgTags,allowedAttributes:safeSvgAttributes,allowedSchemes:[],allowProtocolRelative:false,disallowedTagsMode:'discard',nonTextTags:['script','style','foreignObject','iframe','object','embed','image']});
+  const $=cheerio.load(cleaned,{xmlMode:true}),svg=$('svg').first();if(!svg.length)return null;
+  svg.find('[href]').each((_index,element)=>{const node=$(element),href=node.attr('href')??'';if(!/^#[A-Za-z0-9_.:-]+$/.test(href))node.removeAttr('href')});
+  return $.xml(svg);
+}
+
 const remoteOrDangerous = /^(?:https?:|data:|javascript:|vbscript:|file:|\/\/)/i;
 export const ACADEMIC_READER_CSS='.afterdraft-table-scroll,pre{max-width:100%;overflow:auto}.afterdraft-table-scroll>table{max-width:none;min-width:100%}math[display="block"]{display:block;max-width:100%;overflow-x:auto;overflow-y:hidden}';
 const embeddedImagePattern = /^data:(image\/(?:png|jpeg|gif|webp));base64,([a-z0-9+/=\s]+)$/i;

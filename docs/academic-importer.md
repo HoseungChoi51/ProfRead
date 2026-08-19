@@ -16,11 +16,19 @@ published document version are durable records.
 - A `.tex` file or LaTeX project ZIP. The project archive is extracted with
   traversal, link, file-count, byte, and expansion limits. LaTeXML is the
   preferred semantic converter, with Pandoc as a diagnostic fallback.
+- A standalone paper PDF. Born-digital text is reconstructed into browsing
+  blocks while every accepted page remains available as a folded, enlargeable
+  source image. Scanned pages use that visual fallback without claiming OCR or
+  recovered equation semantics.
+- A public HTTPS article page or DOI. AfterDraft tries the requested article,
+  then may use an exact-DOI PMC/Europe PMC open full-text source when the
+  publisher is blocked. Requested and resolved sources, adapter, license, and
+  content hashes remain visible provenance.
 - Existing HTML and HTML-asset ZIPs continue through the common sanitizer.
 
 ## Execution boundary
 
-The public Fastify process owns authentication, arXiv network fetching, job
+The public Fastify process owns authentication, bounded public-source fetching, job
 state, model calls, sanitization, and persistence. Costly document tools run in
 the credential-free `academic-worker` sidecar over a private Compose network.
 The worker has no host port, no Docker socket, no application data volume, no
@@ -56,6 +64,21 @@ Page dimensions, columns, running headers, and print pagination are not part of
 the browsing view. Wide tables use scroll containers, visuals remain responsive
 and enlargable, and source ordering/associations that require judgment are
 surfaced for review rather than guessed silently.
+
+PDF imports process every page within the configured 100-page/100-MiB input
+limits; they never silently truncate to the visual-review sampling limit.
+Positioned native text remains selectable. Figures, tables, and equations whose
+semantics cannot be recovered safely remain visual crops, backed by the folded
+source page. Models may flag or propose presentation repairs, but cannot
+transcribe or invent scholarly content.
+
+Public web imports execute no publisher JavaScript and receive no browser
+cookies, login state, proxy credentials, or authentication headers. Every page,
+asset, and redirect is HTTPS-only and revalidated against private, loopback,
+link-local, and reserved destinations. Bot challenges, login/paywall shells,
+and abstract-only pages are not publishable articles. If no trusted exact-DOI
+open source exists, the job asks for a PDF or saved HTML bundle instead of
+attempting to bypass access controls.
 
 ## Manual layout repair
 
@@ -97,8 +120,9 @@ associations, moves, semantic roles, alt text, prose, equations, citations,
 numbers, and table cells remain reader-reviewed and cannot enter this repair
 path.
 
-The import dialog discloses that visible derivatives and labeled screenshots
-may be sent to OpenAI. Original archives, hidden OOXML fields, and Zotero JSON
+The import dialog discloses that visible derivatives, PDF/source pages, fetched
+article excerpts, and labeled screenshots may be sent to OpenAI when source
+comparison is enabled. Original archives, hidden OOXML fields, and Zotero JSON
 are not sent. API response storage is disabled; the operator's OpenAI project
 retention policy still applies.
 
@@ -112,6 +136,12 @@ excluding IEEE template chrome and hidden Zotero JSON. Warnings must identify
 tracked changes, missing alt text, and ambiguous/inconsistent captions. Visual
 review checks both desktop and narrow reading views without treating print page
 breaks or column geometry as web-layout requirements.
+
+PDF deployment acceptance exports both manuscripts to PDF and checks every
+page, correct title and reading order, seven figures, two tables, captions, and
+visually preserved equations. A recorded PMC/JATS fixture is the deterministic
+web-import gate; publisher URLs remain live smoke tests because access policies
+and bot filters can change independently of AfterDraft.
 
 ## Operations and backup
 

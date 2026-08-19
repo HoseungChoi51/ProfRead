@@ -18,8 +18,8 @@ function operationUrl(path:string,params:Record<string,string|boolean|number|und
   for(const [key,value] of Object.entries(params))if(value!==undefined)url.searchParams.set(key,String(value));
   return url;
 }
-async function request(path:string,sourcePath:string,mimeType:string,params:Record<string,string|boolean|number|undefined>,signal?:AbortSignal):Promise<Buffer>{
-  const timeout=new AbortController(),timer=setTimeout(()=>timeout.abort(new Error('Academic worker timed out')),10*60_000);
+async function request(path:string,sourcePath:string,mimeType:string,params:Record<string,string|boolean|number|undefined>,signal?:AbortSignal,timeoutMs=10*60_000):Promise<Buffer>{
+  const timeout=new AbortController(),timer=setTimeout(()=>timeout.abort(new Error('Academic worker timed out')),timeoutMs);
   const abort=()=>timeout.abort(signal?.reason);signal?.addEventListener('abort',abort,{once:true});
   try{
     const body=await openAsBlob(sourcePath,{type:mimeType}),response=await fetch(operationUrl(path,params),{method:'POST',headers:{'content-type':mimeType},body,signal:timeout.signal});
@@ -33,5 +33,7 @@ async function request(path:string,sourcePath:string,mimeType:string,params:Reco
 
 export function convertDocx(sourcePath:string,filename:string,includeReference:boolean,signal?:AbortSignal):Promise<Buffer>{return request('/v1/convert/docx',sourcePath,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',{filename,reference:includeReference,referencePages:40},signal)}
 export function convertTex(sourcePath:string,filename:string,entry:string|undefined,signal?:AbortSignal):Promise<Buffer>{return request('/v1/convert/tex',sourcePath,/\.zip$/i.test(filename)?'application/zip':'application/x-tex',{filename,entry},signal)}
+export function convertJats(sourcePath:string,filename:string,signal?:AbortSignal):Promise<Buffer>{return request('/v1/convert/jats',sourcePath,'application/xml',{filename},signal)}
+export function convertPdf(sourcePath:string,filename:string,includeReference:boolean,signal?:AbortSignal):Promise<Buffer>{return request('/v1/convert/pdf',sourcePath,'application/pdf',{filename,reference:includeReference,referencePages:60},signal,18*60_000)}
 export function renderHtml(sourcePath:string,signal?:AbortSignal):Promise<Buffer>{return request('/v1/render',sourcePath,'text/html',{maxObjects:160},signal)}
 export function renderPdf(sourcePath:string,pages=60,signal?:AbortSignal):Promise<Buffer>{return request('/v1/render/pdf',sourcePath,'application/pdf',{filename:basename(sourcePath),pages},signal)}

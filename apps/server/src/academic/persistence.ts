@@ -5,7 +5,7 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { db, now, row } from '../db/index.js';
-import { sanitizeDocument, sanitizeStylesheet } from '../ingest/sanitize.js';
+import { sanitizeDocument, sanitizeStylesheet, sanitizeSvgAsset } from '../ingest/sanitize.js';
 import { utf16ContextWindow, type AnchorContextWindow } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
 import { applyDocumentEditOperations } from '../edits/index.js';
@@ -49,11 +49,11 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
   let transaction=false;
   try{
     const entryFile=resolve(staged.bundleDirectory,staged.entryPath);if(!inside(staged.bundleDirectory,entryFile))throw new Error('Unsafe staged HTML path');files.set(staged.entryPath,await readFile(entryFile));
-    for(const asset of staged.assets){if(!inside(staged.bundleDirectory,asset.storagePath))throw new Error('Unsafe staged asset path');const content=await readFile(asset.storagePath),extension=extname(asset.sourcePath).toLowerCase();if(!validAsset(extension,content))throw new Error(`Converted asset is invalid: ${asset.sourcePath}`);files.set(asset.sourcePath,content)}
+    for(const asset of staged.assets){if(!inside(staged.bundleDirectory,asset.storagePath))throw new Error('Unsafe staged asset path');let content=await readFile(asset.storagePath);const extension=extname(asset.sourcePath).toLowerCase();if(!validAsset(extension,content))throw new Error(`Converted asset is invalid: ${asset.sourcePath}`);if(extension==='.svg'){const safe=sanitizeSvgAsset(content.toString('utf8'));if(!safe)throw new Error(`Converted SVG asset is invalid: ${asset.sourcePath}`);content=Buffer.from(safe)}files.set(asset.sourcePath,content)}
     for(const asset of staged.assets)if(extname(asset.sourcePath).toLowerCase()==='.css'){const content=files.get(asset.sourcePath)!;files.set(asset.sourcePath,Buffer.from(sanitizeStylesheet(content.toString('utf8'),asset.sourcePath,target=>assetIds.has(target)?`/api/assets/${versionId}/${assetIds.get(target)}`:null)))}
     let parsed=sanitizeDocument(files.get(staged.entryPath)!.toString('utf8'),staged.entryPath,path=>assetIds.has(path)?`/api/assets/${versionId}/${assetIds.get(path)}`:null);
     if(repairPlan.operations.length){const canonicalBefore=parsed.canonicalText,repaired=applyDocumentEditOperations(parsed.html,repairPlan.operations,parsed.title);if(repaired.canonicalText!==canonicalBefore)throw new Error('An accepted presentation repair attempted to change scholarly content');parsed=repaired}
-    await mkdir(join(directory,'assets'),{recursive:true});const htmlPath=join(directory,'document.html'),sourceExtension=extname(job.source_name).toLowerCase()||`.${job.source_kind}`,sourcePath=join(directory,`source${sourceExtension.replace(/[^.a-z0-9-]/g,'')||'.bin'}`);
+    await mkdir(join(directory,'assets'),{recursive:true});const htmlPath=join(directory,'document.html'),sourceExtension=job.source_kind==='url'?'.url':extname(job.source_name).toLowerCase()||`.${job.source_kind}`,sourcePath=join(directory,`source${sourceExtension.replace(/[^.a-z0-9-]/g,'')||'.bin'}`);
     await copyFile(job.source_path,sourcePath);await chmod(sourcePath,0o444);await writeFile(htmlPath,parsed.html,{flag:'wx',mode:0o444});
     for(const asset of staged.assets){const id=assetIds.get(asset.sourcePath)!;await writeFile(join(directory,'assets',id),files.get(asset.sourcePath)!,{flag:'wx',mode:0o444})}
     await chmod(directory,0o555);await chmod(join(directory,'assets'),0o555);
