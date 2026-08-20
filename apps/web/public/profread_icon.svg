@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">ProfRead app icon</title>
+  <desc id="desc">A white document-shaped P with gold text lines and bookmark on a navy rounded square.</desc>
+
+  <!-- App tile -->
+  <rect x="20" y="20" width="472" height="472" rx="88" fill="#082B57"/>
+
+  <!-- Bookmark behind the P -->
+  <path d="M236 328 H301 V436 L268.5 407 L236 436 Z" fill="#DDAA2B"/>
+
+  <!-- P outline -->
+  <path d="M143 405 V139 Q143 107 175 107 H294 C369 107 416 154 416 217 C416 281 369 328 294 328 H215"
+        fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Three lines of text -->
+  <path d="M225 174 H318" fill="none" stroke="#DDAA2B" stroke-width="16" stroke-linecap="round"/>
+  <path d="M225 220 H318" fill="none" stroke="#DDAA2B" stroke-width="16" stroke-linecap="round"/>
+  <path d="M225 266 H298" fill="none" stroke="#DDAA2B" stroke-width="16" stroke-linecap="round"/>
+</svg>

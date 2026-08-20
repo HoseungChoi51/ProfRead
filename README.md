@@ -1,6 +1,6 @@
-# AfterDraft
+# ProfRead
 
-AfterDraft is a private, self-hosted web app for reading imported HTML
+ProfRead is a private, self-hosted web app for reading imported HTML
 articles with context-aware LLM explanations, recursive follow-up discussions,
 curated annotations, and durable study artifacts.
 

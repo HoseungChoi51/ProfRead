@@ -31,7 +31,7 @@ function checkedUrl(value:string|URL):URL{const url=value instanceof URL?value:n
 function combinedSignal(signal?:AbortSignal):AbortSignal{const timeout=AbortSignal.timeout(30_000);return signal?AbortSignal.any([signal,timeout]):timeout}
 async function fetchBytes(fetchImpl:FetchLike,urlValue:string|URL,limit:number,signal?:AbortSignal,redirects=0):Promise<{url:URL;bytes:Buffer;contentType:string}>{
   const url=checkedUrl(urlValue);if(redirects>4)throw new Error('arXiv returned too many redirects');
-  const response=await fetchImpl(url,{redirect:'manual',signal:combinedSignal(signal),headers:{accept:'text/html,text/css,image/*,font/*,application/octet-stream;q=0.5','user-agent':'AfterDraft academic importer/0.4'}});
+  const response=await fetchImpl(url,{redirect:'manual',signal:combinedSignal(signal),headers:{accept:'text/html,text/css,image/*,font/*,application/octet-stream;q=0.5','user-agent':'ProfRead academic importer/0.4'}});
   if(response.status>=300&&response.status<400){const location=response.headers.get('location');if(!location)throw new Error(`arXiv redirect ${response.status} omitted its destination`);return fetchBytes(fetchImpl,new URL(location,url),limit,signal,redirects+1)}
   if(!response.ok)throw new Error(`arXiv returned ${response.status} for ${url.pathname}`);const declared=Number(response.headers.get('content-length')??0);if(Number.isFinite(declared)&&declared>limit)throw new Error(`arXiv resource exceeds the ${limit} byte limit`);
   if(!response.body){const bytes=Buffer.from(await response.arrayBuffer());if(bytes.length>limit)throw new Error(`arXiv resource exceeds the ${limit} byte limit`);return{url,bytes,contentType:(response.headers.get('content-type')??'').split(';')[0]!.trim().toLowerCase()}}

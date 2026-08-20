@@ -1,4 +1,4 @@
-# AfterDraft academic worker
+# ProfRead academic worker
 
 This internal, credential-free service isolates native document converters and
 Chromium from the application process. Compose exposes it only on the private

@@ -1,6 +1,6 @@
 # Academic importer
 
-AfterDraft converts academic sources into the same sanitized, browsing-first
+ProfRead converts academic sources into the same sanitized, browsing-first
 HTML and local-asset format used by ordinary imports. The source remains
 immutable; conversion diagnostics, model findings, review decisions, and the
 published document version are durable records.
@@ -20,7 +20,7 @@ published document version are durable records.
   blocks while every accepted page remains available as a folded, enlargeable
   source image. Scanned pages use that visual fallback without claiming OCR or
   recovered equation semantics.
-- A public HTTPS article page or DOI. AfterDraft tries the requested article,
+- A public HTTPS article page or DOI. ProfRead tries the requested article,
   then may use an exact-DOI PMC/Europe PMC open full-text source when the
   publisher is blocked. Requested and resolved sources, adapter, license, and
   content hashes remain visible provenance.
@@ -177,11 +177,11 @@ PDF deployment acceptance exports both manuscripts to PDF and checks every
 page, correct title and reading order, seven figures, two tables, captions, and
 visually preserved equations. A recorded PMC/JATS fixture is the deterministic
 web-import gate; publisher URLs remain live smoke tests because access policies
-and bot filters can change independently of AfterDraft.
+and bot filters can change independently of ProfRead.
 
 ## Operations and backup
 
-The sidecar is part of the AfterDraft Compose lifecycle but stores no durable
+The sidecar is part of the ProfRead Compose lifecycle but stores no durable
 state. SQLite, normalized sources/assets, review evidence retained with each
 import job, and final edits remain in `afterdraft-data`; the existing backup/restore unit is
 therefore unchanged. Back up before migrations, deploy both containers from one

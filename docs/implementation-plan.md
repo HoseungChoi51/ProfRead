@@ -1,4 +1,4 @@
-# Interactive LLM AfterDraft implementation plan
+# Interactive LLM ProfRead implementation plan
 
 ## Summary
 

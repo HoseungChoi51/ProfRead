@@ -1,6 +1,6 @@
 # Deployment and recovery
 
-AfterDraft is intended to run behind an HTTPS reverse proxy or a private VPN.
+ProfRead is intended to run behind an HTTPS reverse proxy or a private VPN.
 The included Compose configuration binds only to loopback. Do not expose port
 4310 directly to the public internet.
 
@@ -16,7 +16,7 @@ The included Compose configuration binds only to loopback. Do not expose port
 
 Compose also starts the internal `academic-worker` conversion sidecar. It has
 no host port, credentials, or persistent volume; check that both services are
-healthy after a deployment. Only the main AfterDraft service should publish
+healthy after a deployment. Only the main ProfRead service should publish
 `127.0.0.1:4310`.
 
 The Compose configuration explicitly creates the engine-level

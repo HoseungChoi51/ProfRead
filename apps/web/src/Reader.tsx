@@ -3638,7 +3638,7 @@ export function Reader({
                 changed.
               </p>
             ) : (
-              <p>Clear all three fields to remove a caption added by AfterDraft.</p>
+              <p>Clear all three fields to remove a caption added by ProfRead.</p>
             )}
             <footer>
               <button type="button" onClick={() => setCaptionDraft(null)}>
@@ -4230,7 +4230,7 @@ export function ThreadCard({
       )}
       {thread.messages.map((message) => (
         <div key={message.id} className={`message ${message.role}`}>
-          <span>{message.role === "assistant" ? "AfterDraft" : "You"}</span>
+          <span>{message.role === "assistant" ? "ProfRead" : "You"}</span>
           <MarkdownContent content={message.content} />
           {message.role === "assistant" && message.id !== "draft" && (
             <div className="message-actions">
