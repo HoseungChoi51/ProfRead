@@ -8,6 +8,7 @@ COPY apps/academic-worker/package.json apps/academic-worker/tsconfig.json ./apps
 RUN npm ci
 COPY packages/shared/src ./packages/shared/src
 COPY apps/server/src ./apps/server/src
+COPY apps/web/public ./apps/web/public
 COPY apps/web/src ./apps/web/src
 COPY apps/academic-worker/src ./apps/academic-worker/src
 RUN npm run build

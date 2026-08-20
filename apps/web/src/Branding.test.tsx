@@ -29,4 +29,9 @@ describe('ProfRead branding',()=>{
     expect(logo).toContain('>ProfRead</text>');
     expect(logo).toContain('Ask. Critique. Understand.');
   });
+
+  it('includes public branding assets in the production container build',async()=>{
+    const dockerfile=await source('../../../Dockerfile');
+    expect(dockerfile).toContain('COPY apps/web/public ./apps/web/public');
+  });
 });
