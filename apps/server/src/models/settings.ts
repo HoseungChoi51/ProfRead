@@ -29,7 +29,7 @@ const defaultTaskModels:Record<TaskAction,string>={
   'document-write':'gpt-5.6-sol', 'review-summary':'gpt-5.6-terra',
   'import-triage':'gpt-5.6-luna', 'import-semantic-audit':'gpt-5.6-terra',
   'import-visual-audit':'gpt-5.6-sol', 'import-adjudicate':'gpt-5.6-sol',
-  'import-verify-repair':'gpt-5.6-terra',
+  'import-verify-repair':'gpt-5.6-terra', 'import-repair-plan':'gpt-5.6-sol',
 };
 
 export function seedModelSettings():void {

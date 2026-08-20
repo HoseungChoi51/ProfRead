@@ -9,13 +9,14 @@ const importAuditActions = new Set<Action>([
   'import-semantic-audit',
   'import-visual-audit',
   'import-adjudicate',
-  'import-verify-repair'
+  'import-verify-repair',
+  'import-repair-plan'
 ]);
 
 export function deterministicProfile(input: RouteInput): ModelProfile['name'] | null {
   if (input.action === 'import-triage') return 'quick';
   if (input.action === 'import-semantic-audit' || input.action === 'import-verify-repair') return 'standard';
-  if (input.action === 'import-visual-audit' || input.action === 'import-adjudicate') return 'vision';
+  if (input.action === 'import-visual-audit' || input.action === 'import-adjudicate' || input.action === 'import-repair-plan') return 'vision';
   if (input.action === 'document-write') return 'deep';
   if (input.action === 'review-summary') return 'digest';
   if (input.action === 'research' || input.webEnabled) return 'research';

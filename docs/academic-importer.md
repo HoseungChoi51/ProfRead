@@ -110,15 +110,51 @@ calls, hard maximum 40, and concurrency two. Coverage is marked partial whenever
 an outline, evidence set, call budget, or model report leaves supplied material
 unreviewed.
 
-Automatic repair is off by default. When explicitly enabled, only
-high-confidence responsive sizing, overflow wrapping, and fixed-dimension
-removal corroborated by deterministic Chromium metrics may be accepted
-automatically. The same guard applies to a reader accepting a repair. Accepted
-operations use the normal document edit engine while the initial version is
-published, and publication fails if canonical text changes. Caption
+Repair application always requires explicit reviewer approval. Only
+high-confidence responsive sizing, overflow wrapping, safe SVG-semantic
+restoration, and fixed-dimension removal backed by deterministic checks can use
+the direct one-click path. Broader bounded CSS candidates require before/after
+review and per-operation approval. Accepted operations use the normal document
+edit engine while the initial version is published, and publication fails if
+canonical text changes. Caption
 associations, moves, semantic roles, alt text, prose, equations, citations,
 numbers, and table cells remain reader-reviewed and cannot enter this repair
 path.
+
+### Actionable review
+
+Raw model reports are grouped by issue and semantic object before they reach the
+review screen. A repeated desktop/narrow or figure/child report is therefore one
+issue with several pieces of evidence, not several independent errors. Each
+issue is labeled **confirmed**, **needs verification**, **rejected**, or
+**resolved**. A model report alone is never presented as deterministic
+corroboration. Outline excerpts, flattened table text, and screenshot edges are
+locator evidence rather than proof of missing or clipped content.
+
+Before publishing, a reader can record a false-positive verdict, defer an issue
+to document edit mode, or leave an instruction and private note. Selected issues
+can be rechecked against their exact stored evidence, or sent together to the
+repair planner. Notes are data supplied to the planner; they cannot override the
+repair contract. Rebuilding the review re-sanitizes the immutable converted
+bundle and regenerates measurements and evidence, which is the correct remedy
+when a sanitizer improvement fixes the derivative itself.
+
+Repairs are revisioned candidates, never source-file mutations. Small structured
+operations such as clearing genuinely fixed dimensions or restoring validated
+SVG viewport and marker semantics can use a one-click path. Broader presentation
+changes are limited to an allowlisted JSON style envelope. In both cases the
+candidate must preserve canonical scholarly text and the external asset
+inventory. The reader can compare original and candidate previews, approve only
+selected operations, and revert the active repair revision. Publication applies
+only that explicitly accepted revision; dismissed findings and model proposals
+cannot alter the article by themselves.
+
+The **Remember response** action creates an editable reviewer-policy rule for a
+bounded scope such as issue category, evidence kind, source kind, or publisher
+domain. Rules can require stronger evidence, lower unsupported findings' review
+priority, increase scrutiny, or add context. They calibrate future prompts but
+never auto-dismiss a finding, serve as evidence, or bypass candidate validation.
+Rules are visible and removable in Settings.
 
 The import dialog discloses that visible derivatives, PDF/source pages, fetched
 article excerpts, and labeled screenshots may be sent to OpenAI when source

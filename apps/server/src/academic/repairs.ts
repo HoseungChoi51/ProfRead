@@ -25,8 +25,13 @@ type RenderMetric = {
   tag?: string;
   visible?: boolean;
   clippedX?: boolean;
+  clippedY?: boolean;
   clientWidth?: number;
   scrollWidth?: number;
+  clientHeight?: number;
+  scrollHeight?: number;
+  overflowX?: string;
+  overflowY?: string;
   rect?: { x?: number; width?: number };
   viewportWidth?: number;
 };
@@ -55,23 +60,22 @@ function metricsByBlock(manifest: Record<string,unknown>): Map<string,RenderMetr
 function overflows(metric: RenderMetric): boolean {
   if (metric.visible === false) return false;
   const x = numeric(metric.rect?.x), width = numeric(metric.rect?.width), viewport = numeric(metric.viewportWidth);
-  return Boolean(metric.clippedX)
-    || numeric(metric.scrollWidth) > numeric(metric.clientWidth) + 1
-    || (viewport > 0 && (width > viewport + 1 || x < -1 || x + width > viewport + 1));
+  const overflowX=metric.overflowX??'visible',overflowY=metric.overflowY??'visible',intentionalX=/^(?:auto|scroll)$/i.test(overflowX),intentionalY=/^(?:auto|scroll)$/i.test(overflowY),
+    horizontalClip=!intentionalX&&(/^(?:hidden|clip)$/i.test(overflowX)&&(Boolean(metric.clippedX)||numeric(metric.scrollWidth)>numeric(metric.clientWidth)+1)||(overflowX==='visible'||!overflowX)&&(viewport>0&&(width>viewport+1||x< -1||x+width>viewport+1))),
+    verticalClip=!intentionalY&&/^(?:hidden|clip)$/i.test(overflowY)&&(Boolean(metric.clippedY)||numeric(metric.scrollHeight)>numeric(metric.clientHeight)+1);
+  return horizontalClip||verticalClip;
 }
 
 function targetNode(html: string, targetRef: string): { tag:string; fixedDimensions:boolean; tableScroll:boolean }|null {
   const $ = cheerio.load(html), node = $('[data-block-id]').filter((_index,element)=>$(element).attr('data-block-id')===targetRef).first();
   if (!node.length) return null;
-  const tag = node.get(0)!.tagName.toLowerCase(), style = node.attr('style') ?? '';
-  const fixedDimensions = Boolean(node.attr('width') || node.attr('height'))
-    || /(?:^|;)\s*(?:width|height)\s*:\s*\d+(?:\.\d+)?(?:px|pt|pc|in|cm|mm)\s*(?:!important)?\s*(?:;|$)/i.test(style);
+  const tag = node.get(0)!.tagName.toLowerCase(),candidates=[node,...(tag==='figure'?node.find('img,svg,video,table').toArray().map(element=>$(element)):[])],fixedDimensions=candidates.some(candidate=>{const style=candidate.attr('style')??'';return Boolean(candidate.attr('width')||candidate.attr('height'))||/(?:^|;)\s*(?:width|height)\s*:\s*\d+(?:\.\d+)?(?:px|pt|pc|in|cm|mm)\s*(?:!important)?\s*(?:;|$)/i.test(style)});
   return { tag, fixedDimensions, tableScroll: node.closest('.afterdraft-table-scroll').length > 0 };
 }
 
 /**
  * A model observation is corroborated only when the exact sanitized block is a
- * presentation object and Chromium measured horizontal clipping/overflow.
+ * presentation object and Chromium measured clipping/overflow.
  * Scholarly text, MathML, citations, and table-cell contents never qualify.
  */
 export function corroborateImportRepair(finding: Finding, renderManifest: Record<string,unknown>, previewHtml: string): boolean {
@@ -83,7 +87,9 @@ export function corroborateImportRepair(finding: Finding, renderManifest: Record
   const measurements = metricsByBlock(renderManifest).get(repair.targetRef) ?? [];
   if (!measurements.some(metric => metric.tag === node.tag && overflows(metric))) return false;
   if (repair.type === 'set-object-layout') return repair.width !== 'auto';
-  if (repair.type === 'wrap-overflow') return node.tag === 'table' && node.tableScroll;
+  // A table already inside the sanitizer's horizontal scroll host is readable;
+  // its larger scrollWidth is intentional navigation, not corroborated crop.
+  if (repair.type === 'wrap-overflow') return node.tag === 'table' && !node.tableScroll;
   return node.fixedDimensions;
 }
 
@@ -97,9 +103,9 @@ export function importRepairOperation(repair: ImportRepairProposal): DocumentEdi
     alignment:'center', enlargeable:true, folded:false,
   };
   if (repair.type === 'clear-fixed-dimensions') return {
-    type:'set-object-layout', blockId:repair.targetRef, width:'content',
-    alignment:'center', enlargeable:true, folded:false,
+    type:'clear-fixed-dimensions', blockId:repair.targetRef,
   };
+  if (repair.type === 'restore-svg-semantics') return { type:'restore-svg-semantics', blockId:repair.targetRef };
   return null;
 }
 

@@ -21,8 +21,15 @@ describe('academic review evidence', () => {
     expect(html).toContain('data:image/png;base64,');
     expect(html).not.toContain('/api/import-jobs/');
     const outline = academicOutline(html);
-    expect(visibleAcademicText(outline)).toContain('[p1] <p> Visible x');
+    expect(visibleAcademicText(outline)).toContain('[p1] <p> metadata=');
+    expect(visibleAcademicText(outline)).toContain('\nVisible x');
     expect(visibleAcademicText(outline)).not.toContain('hidden-source');
+  });
+
+  it('keeps table cells and preformatted lines structural instead of flattening them',()=>{
+    const outline=academicOutline('<table data-block-id="t1"><tr><th>Pi surface</th><th>Meaning</th></tr><tr><td>API</td><td>Stable</td></tr></table><pre data-block-id="c1">line one\n  indented two</pre>');
+    expect(outline[0]).toMatchObject({ref:'t1',tag:'table',text:'| Pi surface | Meaning |\n| API | Stable |',structure:{kind:'table',rowCount:2,columnCount:2}});
+    expect(outline[1]).toMatchObject({ref:'c1',tag:'pre',text:'line one\n  indented two',structure:{kind:'preformatted',lineCount:2,whitespacePreserved:true}});
   });
 
   it('rejects oversized staged assets before reading them into memory', async () => {

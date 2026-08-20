@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from '../config.js';
 import { createImportJobsTableSql, schema } from './schema.js';
+import { reviewWorkflowSchema } from './review-schema.js';
 import { isUtf16Boundary } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
 
@@ -189,6 +190,65 @@ if(!migration16Applied){
   if(foreignKeyErrors.length)throw new Error('Migration 16 failed foreign-key validation');
 }
 
+const migration17Applied=db.prepare('SELECT 1 FROM migrations WHERE version=17').get();
+if(!migration17Applied){
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    const findingColumns=db.prepare('PRAGMA table_info(import_findings)').all() as Array<{name:string}>;
+    if(!findingColumns.some(column=>column.name==='source_comparison'))db.exec("ALTER TABLE import_findings ADD COLUMN source_comparison TEXT NOT NULL DEFAULT ''");
+    db.exec(reviewWorkflowSchema);
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(17,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+  const foreignKeyErrors=db.prepare('PRAGMA foreign_key_check').all();
+  if(foreignKeyErrors.length)throw new Error('Migration 17 failed foreign-key validation');
+}
+const academicIssueColumns=db.prepare('PRAGMA table_info(import_review_issues)').all() as Array<{name:string}>;
+if(!academicIssueColumns.some(column=>column.name==='policy_ids_json'))db.exec("ALTER TABLE import_review_issues ADD COLUMN policy_ids_json TEXT NOT NULL DEFAULT '[]'");
+const academicRevisionColumns=db.prepare('PRAGMA table_info(import_review_revisions)').all() as Array<{name:string}>;
+if(!academicRevisionColumns.some(column=>column.name==='parent_revision_id'))db.exec('ALTER TABLE import_review_revisions ADD COLUMN parent_revision_id TEXT REFERENCES import_review_revisions(id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED');
+db.exec('CREATE INDEX IF NOT EXISTS import_review_revisions_parent_idx ON import_review_revisions(parent_revision_id)');
+
+// Migration 17 briefly used an immediate self-referential RESTRICT action.
+// Rebuild the table so deleting/retrying a job can cascade through an entire
+// revision chain and validate the parent relationship at transaction end.
+const migration18Applied=db.prepare('SELECT 1 FROM migrations WHERE version=18').get();
+if(!migration18Applied){
+  db.exec('PRAGMA foreign_keys=OFF');db.exec('BEGIN IMMEDIATE');
+  try{
+    db.exec('DROP INDEX IF EXISTS import_review_revisions_one_active_job_idx');
+    db.exec('DROP INDEX IF EXISTS import_review_revisions_parent_idx');
+    db.exec(`CREATE TABLE import_review_revisions_v18 (
+      id TEXT PRIMARY KEY,
+      import_job_id TEXT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
+      repair_batch_id TEXT NOT NULL REFERENCES import_repair_batches(id) ON DELETE CASCADE,
+      parent_revision_id TEXT REFERENCES import_review_revisions_v18(id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+      status TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','active','reverted','stale')),
+      base_derivative_hash TEXT NOT NULL,
+      candidate_derivative_hash TEXT NOT NULL,
+      html_path TEXT NOT NULL,
+      canonical_hash TEXT NOT NULL,
+      inventory_hash TEXT NOT NULL,
+      operations_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      activated_at TEXT,
+      reverted_at TEXT,
+      UNIQUE(repair_batch_id,candidate_derivative_hash)
+    )`);
+    db.exec(`INSERT INTO import_review_revisions_v18(id,import_job_id,repair_batch_id,parent_revision_id,status,base_derivative_hash,candidate_derivative_hash,html_path,canonical_hash,inventory_hash,operations_json,created_at,activated_at,reverted_at)
+      SELECT id,import_job_id,repair_batch_id,parent_revision_id,status,base_derivative_hash,candidate_derivative_hash,html_path,canonical_hash,inventory_hash,operations_json,created_at,activated_at,reverted_at FROM import_review_revisions`);
+    db.exec('DROP TABLE import_review_revisions');
+    db.exec('ALTER TABLE import_review_revisions_v18 RENAME TO import_review_revisions');
+    db.exec('CREATE INDEX import_review_revisions_parent_idx ON import_review_revisions(parent_revision_id)');
+    db.exec("CREATE UNIQUE INDEX import_review_revisions_one_active_job_idx ON import_review_revisions(import_job_id) WHERE status='active'");
+    db.prepare('INSERT INTO migrations(version,applied_at)VALUES(18,?)').run(new Date().toISOString());
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error}
+  finally{db.exec('PRAGMA foreign_keys=ON')}
+  const foreignKeyErrors=db.prepare('PRAGMA foreign_key_check').all();
+  if(foreignKeyErrors.length)throw new Error('Migration 18 failed foreign-key validation');
+}
+
 // In-memory provider controllers cannot survive a process restart. Mark every
 // durable "running" row terminal now so idempotent request replay and the
 // one-active-Writer/review guards cannot remain stuck forever.
@@ -196,6 +256,7 @@ const interruptedAt=new Date().toISOString(),interruptedError='Interrupted by se
 db.exec('BEGIN IMMEDIATE');
 try{
   db.prepare("UPDATE import_jobs SET status='failed',stage='interrupted',error=?,updated_at=?,completed_at=? WHERE status IN ('converting','finalizing')").run(interruptedError,interruptedAt,interruptedAt);
+  db.prepare("UPDATE import_jobs SET stage='review',qa_status='failed',error=?,updated_at=? WHERE status='review-ready' AND stage IN ('review-rebuild','review-recheck')").run(interruptedError,interruptedAt);
   db.prepare("UPDATE summary_reviews SET status='failed',result_json=? WHERE status='pending'").run(JSON.stringify({error:interruptedError}));
   db.prepare("UPDATE model_attempts SET status='failed',error=?,completed_at=? WHERE status='running'").run(interruptedError,interruptedAt);
   db.prepare("UPDATE model_runs SET status='failed',error=?,completed_at=? WHERE status='running'").run(interruptedError,interruptedAt);

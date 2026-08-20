@@ -3,6 +3,8 @@ import {describe,expect,it} from 'vitest';
 import {parseAppRoute} from './App.js';
 import {
   ImportFindingCard,
+  RepairBatchPanel,
+  ReviewIssueCard,
   academicCompanionPdfAllowed,
   academicImportAccept,
   academicUploadSourceKind,
@@ -10,13 +12,24 @@ import {
   clampImportCallLimit,
   importFallbackGuidance,
   importJobStageLabel,
+  directRepairLabel,
+  groupReviewIssues,
   normalizeAcademicWebReference,
+  normalizeImportDetail,
   normalizeImportFinding,
   normalizeImportDialogPolicy,
   normalizeImportJobs,
   normalizeImportSourceSummary,
+  normalizeRepairBatch,
+  normalizeReviewIssue,
+  repairBatchRequest,
+  adjudicationReviewFeedbackUpdates,
+  reviewerPolicyPayload as rememberPolicyPayload,
+  reviewerPolicyDomain,
+  reviewVerification,
+  selectedReviewFeedbackUpdates,
 } from './AcademicImport.js';
-import {academicImportTasks,isAcademicImportPrompt,isActiveAcademicImportPrompt,normalizeAcademicPolicy} from './Settings.js';
+import {academicImportTasks,isAcademicImportPrompt,isActiveAcademicImportPrompt,normalizeAcademicPolicy,normalizeReviewerPolicies,reviewerPolicyPayload as settingsPolicyPayload,reviewerPolicyScopeLabel} from './Settings.js';
 
 describe('academic import navigation and input policy',()=>{
   it('routes persisted job reviews independently from documents',()=>{
@@ -60,7 +73,7 @@ describe('academic import navigation and input policy',()=>{
   });
 
   it('uses saved importer defaults when opening a new import',()=>{
-    expect(normalizeImportDialogPolicy({values:{enabled:false,maxCalls:14,sourceReference:false,autoApply:false}})).toEqual({enabled:false,maxCalls:14,sourceReference:false,autoApply:false});
+    expect(normalizeImportDialogPolicy({values:{enabled:false,maxCalls:14,sourceReference:false,autoApply:true}})).toEqual({enabled:false,maxCalls:14,sourceReference:false,autoApply:false});
     expect(normalizeImportDialogPolicy({})).toMatchObject({autoApply:false});
   });
 });
@@ -128,24 +141,113 @@ describe('academic import job presentation',()=>{
       confidence:.95,repair:'wrap overflow',
     });
   });
+
+  it('normalizes grouped review issues and preserves feedback aliases',()=>{
+    const issue=normalizeReviewIssue({
+      issue_id:'issue-1',job_id:'job-1',issue_code:'table-overflow',status:'pending',confidence:'high',corroborated:true,source:'model',
+      target_refs:['table-1','table-1'],finding_ids:['finding-1'],proposed_repair:{type:'clear-fixed-dimensions',target_ref:'table-1'},repairable:true,
+      feedback:{verdict:'dismissed',comment:'Expected wide source table',reviewer_note:'Publisher layout is intentional'},
+    });
+    expect(issue).toMatchObject({id:'issue-1',jobId:'job-1',code:'table-overflow',verification:'confirmed',confidence:.95,source:'model',targetRefs:['table-1'],repairable:true,feedback:{decision:'dismissed',reason:'Expected wide source table',note:'Publisher layout is intentional'}});
+    expect(directRepairLabel(issue)).toBe('Clear fixed dimensions');
+    expect(directRepairLabel(normalizeReviewIssue({id:'svg',proposedRepair:{type:'restore-svg-semantics',targetRef:'svg-1'},repairable:true,corroborated:true}))).toBe('Restore SVG geometry and markers');
+    expect(reviewVerification('dismissed',true)).toBe('rejected');
+    expect(reviewVerification('accepted',false)).toBe('resolved');
+  });
+
+  it('falls back from legacy findings while keeping native review issues distinguishable',()=>{
+    const legacy=normalizeImportDetail({id:'legacy-job',source_name:'paper.html',status:'review-ready',findings:[{id:'finding-1',issue_code:'missing-alt-text',decision:'dismissed'}]});
+    expect(legacy.nativeReviewIssues).toBe(false);
+    expect(legacy.reviewIssues[0]).toMatchObject({id:'finding-1',code:'missing-alt-text',verification:'rejected'});
+    const native=normalizeImportDetail({id:'new-job',sourceName:'paper.pdf',status:'review-ready',reviewIssues:[{id:'issue-2',issueCode:'figure-cropped',verificationStatus:'unverified'}],repairBatches:[]});
+    expect(native.nativeReviewIssues).toBe(true);
+    expect(native.reviewIssues[0]).toMatchObject({id:'issue-2',verification:'unverified'});
+  });
+
+  it('normalizes candidate repair batches and groups issue verification in workflow order',()=>{
+    const batch=normalizeRepairBatch({batch_id:'batch-1',status:'draft',issue_ids:['i1'],candidate_derivative_hash:'a'.repeat(64),operations:[{id:'op-1',type:'set-object-layout',target_ref:'figure-1',width:'full',alignment:'center'}],validation:{canonical_unchanged:true,inventory_unchanged:true,errors:[]}});
+    expect(batch).toMatchObject({id:'batch-1',status:'draft',issueIds:['i1'],operations:[{id:'op-1',serverId:'op-1',type:'set-object-layout'}],validation:{canonicalUnchanged:true,inventoryUnchanged:true,errors:[]}});
+    expect(batch.operations[0]?.label).toContain('full, center');
+    const confirmed=normalizeReviewIssue({id:'confirmed',corroborated:true}),unverified=normalizeReviewIssue({id:'unverified'}),rejected=normalizeReviewIssue({id:'rejected',status:'dismissed'}),resolved=normalizeReviewIssue({id:'resolved',status:'manual'});
+    expect(groupReviewIssues([resolved,rejected,unverified,confirmed]).map(group=>group.verification)).toEqual(['confirmed','unverified','rejected','resolved']);
+  });
+
+  it('renders actionable verified issues without offering direct repair to unverified observations',()=>{
+    const issue=normalizeReviewIssue({id:'issue-1',issueCode:'responsive-regression',title:'Fixed image width',description:'Image clips on a narrow viewport.',status:'pending',confidence:'high',corroborated:true,repairable:true,targetRefs:['figure-1'],proposedRepair:{type:'clear-fixed-dimensions',targetRef:'figure-1'},feedback:{reason:'Preserve the caption',note:'Checked source PDF'}});
+    const html=renderToStaticMarkup(<ReviewIssueCard issue={issue} selected feedbackEnabled busy={false} onSelected={()=>{}} onSave={async()=>{}} onDirectRepair={async()=>{}} onDraftChange={()=>{}} onEvidence={()=>{}} onTarget={()=>{}} onRemember={()=>{}}/>);
+    expect(html).toContain('Clear fixed dimensions');
+    expect(html).toContain('Handle after publishing');
+    expect(html).toContain('Remember response');
+    expect(html).toContain('Preserve the caption');
+    const unverified=renderToStaticMarkup(<ReviewIssueCard issue={{...issue,corroborated:false,verification:'unverified'}} selected={false} feedbackEnabled busy={false} onSelected={()=>{}} onSave={async()=>{}} onDirectRepair={async()=>{}} onDraftChange={()=>{}} onEvidence={()=>{}} onTarget={()=>{}} onRemember={()=>{}}/>);
+    expect(unverified).not.toContain('Clear fixed dimensions');
+    expect(unverified).toContain('Reviewer observation only');
+  });
+
+  it('lets an open commented issue enter batch planning before a repair exists and renders textual evidence',()=>{
+    const issue=normalizeReviewIssue({id:'issue-commented',issueCode:'citation-mismatch',title:'Check citation',status:'pending',verificationStatus:'unverified',repairable:false,evidence:[{id:'source-comparison',kind:'source-comparison',label:'Source comparison',storagePath:'/srv/private/import.png',comparison:{source:'[12]',output:'[21]'}}]});
+    const html=renderToStaticMarkup(<ReviewIssueCard issue={issue} selected={false} feedbackEnabled busy={false} onSelected={()=>{}} onSave={async()=>{}} onDirectRepair={async()=>{}} onDraftChange={()=>{}} onEvidence={()=>{}} onTarget={()=>{}} onRemember={()=>{}}/>);
+    expect(html).toContain('type="checkbox"');
+    expect(html).not.toContain('type="checkbox" disabled');
+    expect(html).toContain('Save comment');
+    expect(issue.evidence[0]?.detail).toContain('&quot;source&quot;'.replaceAll('&quot;','"'));
+    expect(JSON.stringify(issue)).not.toContain('/srv/private');
+    expect(repairBatchRequest([issue.id,issue.id],'planner')).toEqual({issueIds:['issue-commented'],strategy:'planner'});
+    expect(selectedReviewFeedbackUpdates(['issue-b','issue-a','issue-b'],{'issue-a':{comment:'Preserve symbols',note:'Compared with PDF'},'issue-b':{comment:'Move after paragraph 4',note:''}})).toEqual([
+      {issueId:'issue-b',comment:'Move after paragraph 4',note:''},
+      {issueId:'issue-a',comment:'Preserve symbols',note:'Compared with PDF'},
+    ]);
+    expect(adjudicationReviewFeedbackUpdates([],{'issue-a':{comment:'Preserve symbols',note:'Compared with PDF'},'issue-b':{comment:'Move after paragraph 4',note:''}}).map(item=>item.issueId).sort()).toEqual(['issue-a','issue-b']);
+    expect(adjudicationReviewFeedbackUpdates(['issue-b'],{'issue-a':{comment:'Preserve symbols',note:'Compared with PDF'},'issue-b':{comment:'Move after paragraph 4',note:''}}).map(item=>item.issueId)).toEqual(['issue-b']);
+  });
+
+  it('shows validated candidate operations and builds guidance-only memory payloads',()=>{
+    const batch=normalizeRepairBatch({id:'batch-1',status:'draft',operations:[{id:'operation-1',type:'clear-fixed-dimensions',targetRef:'figure-1'}],validation:{canonicalUnchanged:true,inventoryUnchanged:true,errors:[]}});
+    const html=renderToStaticMarkup(<RepairBatchPanel batches={[batch]} selectedId="batch-1" busy={false} onSelect={()=>{}} onRefresh={()=>{}} onAccept={()=>{}} onRevert={()=>{}}/>);
+    expect(html).toContain('Text unchanged');
+    expect(html).toContain('Inventory unchanged');
+    expect(html).toContain('Accept selected repairs');
+    const issue=normalizeReviewIssue({id:'issue-1',issueCode:'table-overflow',source:'model'});
+    expect(rememberPolicyPayload(issue,'category-source','lower-priority','Wide tables are expected')).toEqual({name:'Wide tables are expected',enabled:true,priority:100,match:{issueCode:'table-overflow',source:'model'},action:'lower-priority'});
+    const broad=normalizeRepairBatch({id:'batch-css',status:'draft',operations:[{id:'operation-css',rationale:'Remove only clipping.',proposal:{type:'derived-html-css-patch',targetRefs:['figure-1'],patch:'{"operations":[{"targetRef":"figure-1","setStyle":{"overflow":null}}]}'}}],validation:{canonicalUnchanged:true,inventoryUnchanged:true,errors:[]}});
+    const broadHtml=renderToStaticMarkup(<RepairBatchPanel batches={[broad]} selectedId="batch-css" busy={false} onSelect={()=>{}} onRefresh={()=>{}} onAccept={()=>{}} onRevert={()=>{}}/>);
+    expect(broadHtml).toContain('Review exact change');
+    expect(broadHtml).toContain('Proposed presentation patch');
+    expect(broadHtml).toContain('Remove only clipping.');
+    expect(broadHtml).toContain('disabled');
+    const staleHtml=renderToStaticMarkup(<RepairBatchPanel batches={[{...batch,status:'stale'}]} selectedId="batch-1" busy={false} onSelect={()=>{}} onRefresh={()=>{}} onAccept={()=>{}} onRevert={()=>{}}/>);
+    expect(staleHtml).toContain('Rebuild candidate');
+  });
 });
 
 describe('academic importer settings',()=>{
   it('keeps import review prompts and routes separate from reader actions',()=>{
     expect(academicImportTasks.map(([key])=>key)).toEqual([
-      'import-triage','import-semantic-audit','import-visual-audit',
+      'import-triage','import-semantic-audit','import-visual-audit','import-repair-plan',
     ]);
     expect(isAcademicImportPrompt('system.import-review')).toBe(true);
     expect(isAcademicImportPrompt('import.visual-audit')).toBe(true);
     expect(isAcademicImportPrompt('contract.import-findings')).toBe(true);
     expect(isAcademicImportPrompt('contract.ask')).toBe(false);
     expect(isActiveAcademicImportPrompt('import.visual-audit')).toBe(true);
+    expect(isActiveAcademicImportPrompt('import.repair-plan')).toBe(true);
+    expect(isActiveAcademicImportPrompt('contract.import-repairs')).toBe(true);
     expect(isActiveAcademicImportPrompt('import.adjudicate')).toBe(false);
   });
 
   it('normalizes and bounds stored academic review defaults',()=>{
-    const policy=normalizeAcademicPolicy({values:{enabled:false,max_calls:90,concurrency:8,source_reference:false,auto_apply:false},customized:true});
+    const policy=normalizeAcademicPolicy({values:{enabled:false,max_calls:90,concurrency:8,source_reference:false,auto_apply:true},customized:true});
     expect(policy.values).toEqual({enabled:false,maxCalls:40,concurrency:2,sourceReference:false,autoApply:false});
     expect(policy.customized).toBe(true);
+  });
+
+  it('normalizes editable reviewer guidance without widening invalid matches or actions',()=>{
+    const policies=normalizeReviewerPolicies({policies:[{policy_id:'policy-1',name:'  Wide publisher tables  ',enabled:0,priority:5000,matcher:{issue_code:'table-overflow',evidence_kind:'object',source:'model'},action:'lower-priority'}]});
+    expect(policies[0]).toMatchObject({id:'policy-1',name:'Wide publisher tables',enabled:false,priority:5000,match:{issueCode:'table-overflow',evidenceKind:'object',source:'model'},action:'lower-priority'});
+    expect(reviewerPolicyScopeLabel(policies[0]!)).toBe('issue table-overflow · evidence object · model findings');
+    expect(settingsPolicyPayload({name:'  Stronger evidence ',enabled:true,priority:-3,issueCode:' figure-cropped ',evidenceKind:'',source:'deterministic',sourceAction:'',sourceKind:' url ',domain:' Publisher.Example ',action:'require-stronger-evidence'})).toEqual({name:'Stronger evidence',enabled:true,priority:0,match:{issueCode:'figure-cropped',source:'deterministic',sourceKind:'url',domain:'publisher.example'},action:'require-stronger-evidence'});
+    expect(reviewerPolicyDomain('https://Publisher.Example/paper')).toBe('publisher.example');
+    expect(reviewerPolicyDomain('not a URL')).toBeNull();
+    expect(normalizeReviewerPolicies({policies:[{id:'unsafe',action:'dismiss'}]})[0]?.action).toBe('require-stronger-evidence');
   });
 });

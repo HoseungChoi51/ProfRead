@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import * as cheerio from 'cheerio';
 import { nanoid } from 'nanoid';
 import { config } from '../config.js';
@@ -10,7 +10,7 @@ import { readSafeZip } from '../ingest/zip.js';
 import { registerImportJobLifecycle } from '../routes/import-jobs.js';
 import { assetMime, extractAcademicBundle, stableAssetId, type AcademicManifest, type ExtractedBundle } from './bundle.js';
 import { pdfReferenceEvidence } from './pdf-reference.js';
-import { publishAcademicImport, type StagedAcademicResult } from './persistence.js';
+import { publishAcademicImport, stagedResultSchema, type StagedAcademicResult } from './persistence.js';
 import { AcademicWorkerError, convertDocx, convertPdf, convertTex } from './worker-client.js';
 import type { AcademicSourceKind } from './source-kind.js';
 
@@ -120,5 +120,33 @@ async function run(jobId:string):Promise<void>{
 async function drain():Promise<void>{if(draining)return;draining=true;try{while(queued.size){const id=queued.values().next().value as string;queued.delete(id);await run(id)}}finally{draining=false;if(queued.size)void drain()}}
 export function enqueueAcademicImport(jobId:string):void{queued.add(jobId);setImmediate(()=>void drain())}
 export function cancelAcademicImport(jobId:string):void{controllers.get(jobId)?.abort()}
-export async function finalizeAcademicImport(jobId:string){const claimed=db.prepare("UPDATE import_jobs SET status='finalizing',stage='finalizing',error=NULL,updated_at=? WHERE id=? AND status='review-ready'").run(now(),jobId);if(!claimed.changes)throw Object.assign(new Error('Import is not ready to publish'),{statusCode:409});try{return await publishAcademicImport(jobId)}catch(error){db.prepare("UPDATE import_jobs SET status='review-ready',stage='publish-failed',error=?,updated_at=? WHERE id=? AND status='finalizing'").run(error instanceof Error?error.message:String(error),now(),jobId);throw error}}
+async function stagedBundle(job:AcademicJob,staged:StagedAcademicResult):Promise<ExtractedBundle>{
+  const directory=resolve(staged.bundleDirectory),jobRoot=resolve(config.dataDir,'imports',job.id),manifest=staged.manifest as AcademicManifest;
+  if(!directory.startsWith(jobRoot+sep)||manifest.operation!=='convert'||manifest.source?.sha256!==job.source_hash||manifest.output?.entryPath!==staged.entryPath)throw new Error('The immutable import bundle no longer matches this job');
+  if(!Array.isArray(manifest.files)||manifest.files.length>config.limits.entries)throw new Error('The immutable import bundle inventory is invalid');
+  const files:ExtractedBundle['files']=[];let total=0;
+  for(const item of manifest.files){
+    const path=String(item.path??''),storagePath=resolve(directory,path);if(!path||!storagePath.startsWith(directory+sep))throw new Error('The immutable import bundle contains an unsafe path');
+    const content=await readFile(storagePath);total+=content.byteLength;if(total>config.limits.expandedBytes||content.byteLength!==item.bytes||createHash('sha256').update(content).digest('hex')!==item.sha256)throw new Error(`The immutable import bundle failed integrity validation: ${path}`);
+    files.push({path,storagePath,bytes:content.byteLength,sha256:item.sha256});
+  }
+  if(!files.some(file=>file.path===staged.entryPath))throw new Error('The immutable import bundle entry is missing');
+  return{directory,entryPath:staged.entryPath,manifest:manifest as ExtractedBundle['manifest'],files};
+}
+
+/** Re-sanitize the immutable conversion bundle and, when enabled, rerun model review. */
+export async function rebuildAcademicImportReview(jobId:string,review:ReviewHook):Promise<{reviewIssuesRebuilt:true;qaStatus:string;callsUsed:number}>{
+  const active=row<{id:string}>("SELECT id FROM import_review_revisions WHERE import_job_id=? AND status='active'",jobId);if(active)throw Object.assign(new Error('Revert accepted repair revisions before rebuilding the review'),{statusCode:409});
+  const claimed=db.prepare("UPDATE import_jobs SET stage='review-rebuild',qa_status=CASE WHEN ai_review_enabled=1 THEN 'running' ELSE 'skipped' END,error=NULL,call_count=0,updated_at=? WHERE id=? AND status='review-ready' AND stage IN ('review','publish-failed')").run(now(),jobId);if(!claimed.changes)throw Object.assign(new Error('Import review is not ready to rebuild'),{statusCode:409});
+  const job=row<AcademicJob>('SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,entry_path,status,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference FROM import_jobs WHERE id=?',jobId)!,jobRoot=join(config.dataDir,'imports',jobId);
+  try{
+    const result=row<{result_json:string|null}>('SELECT result_json FROM import_jobs WHERE id=?',jobId),staged=result?.result_json?stagedResultSchema.parse(JSON.parse(result.result_json)):null;if(!staged)throw new Error('Import result is unavailable');
+    db.exec('BEGIN IMMEDIATE');try{db.prepare("UPDATE import_repair_batches SET status='stale',error='Review was rebuilt from the immutable conversion',updated_at=? WHERE import_job_id=? AND status='draft'").run(now(),jobId);db.prepare("UPDATE import_review_revisions SET status='stale' WHERE import_job_id=? AND status='candidate'").run(jobId);db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}
+    await rm(join(jobRoot,'evidence'),{recursive:true,force:true});const bundle=await stagedBundle(job,staged),prepared=await prepare(job,bundle),warnings=bundle.manifest.warnings??[];insertWarnings(jobId,warnings);
+    db.prepare('UPDATE import_jobs SET result_json=?,warnings_json=?,updated_at=? WHERE id=?').run(JSON.stringify(prepared.staged),JSON.stringify(warnings),now(),jobId);
+    let qaStatus='skipped',callsUsed=0;if(job.ai_review_enabled){const outcome=await review({job,bundle,staged:prepared.staged,previewPath:prepared.previewPath,signal:new AbortController().signal});qaStatus=outcome.status;callsUsed=outcome.callCount}
+    db.prepare("UPDATE import_jobs SET stage='review',qa_status=?,call_count=?,error=NULL,updated_at=? WHERE id=? AND status='review-ready' AND stage='review-rebuild'").run(qaStatus,callsUsed,now(),jobId);return{reviewIssuesRebuilt:true,qaStatus,callsUsed};
+  }catch(error){db.prepare("UPDATE import_jobs SET stage='review',qa_status='failed',error=?,updated_at=? WHERE id=? AND status='review-ready' AND stage='review-rebuild'").run(error instanceof Error?error.message:String(error),now(),jobId);throw error}
+}
+export async function finalizeAcademicImport(jobId:string){const claimed=db.prepare("UPDATE import_jobs SET status='finalizing',stage='finalizing',error=NULL,updated_at=? WHERE id=? AND status='review-ready' AND stage IN ('review','publish-failed')").run(now(),jobId);if(!claimed.changes)throw Object.assign(new Error('Import is not ready to publish'),{statusCode:409});try{return await publishAcademicImport(jobId)}catch(error){db.prepare("UPDATE import_jobs SET status='review-ready',stage='publish-failed',error=?,updated_at=? WHERE id=? AND status='finalizing'").run(error instanceof Error?error.message:String(error),now(),jobId);throw error}}
 export function startAcademicImportRunner():void{if(started)return;started=true;registerImportJobLifecycle({enqueue:enqueueAcademicImport,cancel:cancelAcademicImport,finalize:finalizeAcademicImport});for(const item of rows<{id:string}>("SELECT id FROM import_jobs WHERE status='queued' ORDER BY created_at"))enqueueAcademicImport(item.id)}

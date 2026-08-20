@@ -11,7 +11,7 @@ afterEach(() => { resetAcademicImportSettings(); });
 describe('academic import settings', () => {
   it('persists bounded review policy and resets to source defaults', () => {
     expect(academicImportSettingsResponse()).toMatchObject({ values: academicImportDefaults, customized: false });
-    const changed = { ...academicImportDefaults, maxCalls: 40, autoApply: true };
+    const changed = { ...academicImportDefaults, maxCalls: 40 };
     expect(saveAcademicImportSettings(changed)).toMatchObject({ values: changed, customized: true });
     expect(resetAcademicImportSettings()).toMatchObject({ values: academicImportDefaults, customized: false });
   });
@@ -19,5 +19,6 @@ describe('academic import settings', () => {
   it('rejects unbounded call and concurrency limits', () => {
     expect(() => saveAcademicImportSettings({ ...academicImportDefaults, maxCalls: 41 })).toThrow();
     expect(() => saveAcademicImportSettings({ ...academicImportDefaults, concurrency: 3 })).toThrow();
+    expect(() => saveAcademicImportSettings({ ...academicImportDefaults, autoApply: true })).toThrow(/Automatic repair application is retired/);
   });
 });

@@ -26,7 +26,7 @@ const diagramTool={name:'render_diagram',schema:diagramSpecSchema};
 type RunInput=z.infer<typeof runSchema>;
 const artifactActions=new Set<RunInput['action']>(['summarize','tldr','half-page','visual-recap','compact','visualize']);
 const annotationCandidateActions=new Set<RunInput['action']>(['define','explain','eli14','ask','research','visualize']);
-const internalImportActions=new Set<RunInput['action']>(['import-triage','import-semantic-audit','import-visual-audit','import-adjudicate','import-verify-repair']);
+const internalImportActions=new Set<RunInput['action']>(['import-triage','import-semantic-audit','import-visual-audit','import-adjudicate','import-verify-repair','import-repair-plan']);
 type ScopeError={status:400|404;error:string};
 type ThreadScope={document_id:string;anchor_id:string|null;parent_message_id:string|null;anchor_document_version_id:string|null;anchor_document_id:string|null};
 

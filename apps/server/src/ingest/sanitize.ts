@@ -52,27 +52,37 @@ export function looseAcademicCaptionKind(value:string):'figure'|'table'|null{
 
 const blockSelector = 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,figcaption,table,img,svg,figure,video,math[display="block"]';
 const mathTags=['math','semantics','annotation','annotation-xml','mrow','mi','mo','mn','mtext','ms','mspace','mfrac','msqrt','mroot','mstyle','merror','mpadded','mphantom','mfenced','menclose','msub','msup','msubsup','munder','mover','munderover','mmultiscripts','mprescripts','none','mtable','mtr','mtd','mlabeledtr','maligngroup','malignmark','maction','mglyph'];
-const allowedTags = sanitizeHtml.defaults.allowedTags.concat(['html','head','body','link','main','article','section','figure','figcaption','picture','img','video','source','iframe','svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol','table','thead','tbody','tfoot','tr','th','td','colgroup','col','details','summary',...mathTags]);
+const svgNumberPattern=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i,localSvgFragmentPattern=/^#[A-Za-z0-9_.:-]+$/;
+function normalizedSvgNumber(value:string|undefined,positive=false):string|undefined{const raw=value?.trim();if(!raw||!svgNumberPattern.test(raw))return;const number=Number(raw);if(!Number.isFinite(number)||Math.abs(number)>1e9||(positive&&number<=0))return;return Object.is(number,-0)?'0':String(number)}
+function normalizedSvgViewBox(value:string|undefined):string|undefined{const parts=value?.trim().split(/[\s,]+/).filter(Boolean);if(parts?.length!==4)return;const normalized=parts.map((part,index)=>normalizedSvgNumber(part,index>=2));return normalized.every((part):part is string=>part!==undefined)?normalized.join(' '):undefined}
+function caseInsensitiveAttribute(attributes:Record<string,string>,name:string):string|undefined{return Object.entries(attributes).find(([key])=>key.toLowerCase()===name.toLowerCase())?.[1]}
+function replaceCaseInsensitiveAttribute(attributes:Record<string,string>,name:string,value?:string):void{for(const key of Object.keys(attributes))if(key.toLowerCase()===name.toLowerCase())delete attributes[key];if(value!==undefined)attributes[name]=value}
+function normalizeSvgElement(_tag:string,source:Record<string,string>){const attributes={...source};replaceCaseInsensitiveAttribute(attributes,'viewBox',normalizedSvgViewBox(caseInsensitiveAttribute(source,'viewBox')));return{tagName:'svg',attribs:attributes}}
+function normalizeSvgMarker(_tag:string,source:Record<string,string>){const attributes={...source};replaceCaseInsensitiveAttribute(attributes,'viewBox',normalizedSvgViewBox(caseInsensitiveAttribute(source,'viewBox')));replaceCaseInsensitiveAttribute(attributes,'markerWidth',normalizedSvgNumber(caseInsensitiveAttribute(source,'markerWidth'),true));replaceCaseInsensitiveAttribute(attributes,'markerHeight',normalizedSvgNumber(caseInsensitiveAttribute(source,'markerHeight'),true));replaceCaseInsensitiveAttribute(attributes,'refX',normalizedSvgNumber(caseInsensitiveAttribute(source,'refX')));replaceCaseInsensitiveAttribute(attributes,'refY',normalizedSvgNumber(caseInsensitiveAttribute(source,'refY')));const rawOrient=caseInsensitiveAttribute(source,'orient')?.trim(),orient=rawOrient==='auto'||rawOrient==='auto-start-reverse'?rawOrient:normalizedSvgNumber(rawOrient);replaceCaseInsensitiveAttribute(attributes,'orient',orient);const rawUnits=caseInsensitiveAttribute(source,'markerUnits')?.trim().toLowerCase(),units=rawUnits==='strokewidth'?'strokeWidth':rawUnits==='userspaceonuse'?'userSpaceOnUse':undefined;replaceCaseInsensitiveAttribute(attributes,'markerUnits',units);return{tagName:'marker',attribs:attributes}}
+const svgTransformTags={svg:normalizeSvgElement,marker:normalizeSvgMarker};
+const svgStyledAttributes=['style','marker-start','marker-mid','marker-end'];
+const allowedTags = sanitizeHtml.defaults.allowedTags.concat(['html','head','body','link','main','article','section','figure','figcaption','picture','img','video','source','iframe','svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol','marker','table','thead','tbody','tfoot','tr','th','td','colgroup','col','details','summary',...mathTags]);
 const allowedAttributes: sanitizeHtml.IOptions['allowedAttributes'] = {
   '*': ['id','class','title','aria-label','aria-describedby','role','data-*'],
   a: ['href','name','target','rel'], img: ['src','alt','width','height','srcset'], video: ['controls','width','height','aria-label'], source: ['src','srcset','type','media'],
   iframe: ['src','title','width','height','allow','allowfullscreen','loading','referrerpolicy'],
   link: ['href','rel','media'],
-  svg: ['viewBox','width','height','xmlns','fill','stroke','aria-label','role'],
-  path: ['d','fill','stroke','stroke-width'], g: ['transform','fill','stroke'], circle: ['cx','cy','r','fill','stroke'],
-  rect: ['x','y','rx','ry','width','height','fill','stroke'], line: ['x1','y1','x2','y2','stroke'],
-  polyline: ['points','fill','stroke'], polygon: ['points','fill','stroke'], ellipse: ['cx','cy','rx','ry','fill','stroke'],
-  text: ['x','y','dx','dy','text-anchor','font-size','fill'], use: ['href'], table: ['summary'], th: ['scope','colspan','rowspan'], td: ['colspan','rowspan'],
+  svg: ['viewBox','width','height','xmlns','fill','stroke','aria-label','role','style'],
+  path: ['d','fill','stroke','stroke-width',...svgStyledAttributes], g: ['transform','fill','stroke',...svgStyledAttributes], circle: ['cx','cy','r','fill','stroke',...svgStyledAttributes],
+  rect: ['x','y','rx','ry','width','height','fill','stroke',...svgStyledAttributes], line: ['x1','y1','x2','y2','stroke',...svgStyledAttributes],
+  polyline: ['points','fill','stroke',...svgStyledAttributes], polygon: ['points','fill','stroke',...svgStyledAttributes], ellipse: ['cx','cy','rx','ry','fill','stroke',...svgStyledAttributes],
+  text: ['x','y','dx','dy','text-anchor','font-size','fill','style'], use: ['href','style'], marker:['id','viewBox','markerWidth','markerHeight','refX','refY','orient','markerUnits','preserveAspectRatio','style'], table: ['summary'], th: ['scope','colspan','rowspan'], td: ['colspan','rowspan'],
   math:['display','alttext','overflow'], annotation:['encoding'], 'annotation-xml':['encoding'],
   mi:['mathvariant','mathsize','mathcolor','mathbackground'],mn:['mathvariant','mathsize','mathcolor','mathbackground'],mo:['form','fence','separator','lspace','rspace','stretchy','symmetric','maxsize','minsize','largeop','movablelimits','accent','mathvariant','mathsize','mathcolor','mathbackground'],mtext:['mathvariant','mathsize','mathcolor','mathbackground'],ms:['lquote','rquote','mathvariant','mathsize','mathcolor','mathbackground'],mspace:['width','height','depth','linebreak'],mstyle:['scriptlevel','displaystyle','scriptsizemultiplier','scriptminsize','mathvariant','mathsize','mathcolor','mathbackground'],mpadded:['width','height','depth','lspace','voffset'],mfenced:['open','close','separators'],menclose:['notation'],mfrac:['linethickness','numalign','denomalign','bevelled'],munder:['accentunder'],mover:['accent'],munderover:['accent','accentunder'],mtable:['align','rowalign','columnalign','rowspacing','columnspacing','rowlines','columnlines','frame','framespacing','equalrows','equalcolumns','displaystyle','side','minlabelspacing'],mtr:['rowalign','columnalign'],mlabeledtr:['rowalign','columnalign'],mtd:['rowspan','columnspan','rowalign','columnalign'],maction:['actiontype','selection'],mglyph:['src','alt','width','height','valign'],
 };
 
-const safeSvgTags=['svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol'];
-const safeSvgAttributes: NonNullable<sanitizeHtml.IOptions['allowedAttributes']>={svg:allowedAttributes.svg!,path:allowedAttributes.path!,g:allowedAttributes.g!,circle:allowedAttributes.circle!,rect:allowedAttributes.rect!,line:allowedAttributes.line!,polyline:allowedAttributes.polyline!,polygon:allowedAttributes.polygon!,ellipse:allowedAttributes.ellipse!,text:allowedAttributes.text!,use:allowedAttributes.use!,symbol:['id','viewBox']};
+const safeSvgTags=['svg','path','g','circle','rect','line','polyline','polygon','ellipse','text','defs','use','symbol','marker'];
+const safeSvgAttributes: NonNullable<sanitizeHtml.IOptions['allowedAttributes']>={svg:allowedAttributes.svg!,path:allowedAttributes.path!,g:allowedAttributes.g!,circle:allowedAttributes.circle!,rect:allowedAttributes.rect!,line:allowedAttributes.line!,polyline:allowedAttributes.polyline!,polygon:allowedAttributes.polygon!,ellipse:allowedAttributes.ellipse!,text:allowedAttributes.text!,use:allowedAttributes.use!,symbol:['id','viewBox'],marker:allowedAttributes.marker!};
+function sanitizeSvgReferences($:cheerio.CheerioAPI):void{$('svg,svg *').each((_index,element)=>{const node=$(element),href=node.attr('href');if(href&&!localSvgFragmentPattern.test(href))node.removeAttr('href');for(const name of ['style','fill','stroke','marker-start','marker-mid','marker-end']){const value=node.attr(name);if(value&&/url\s*\(/i.test(value))node.attr(name,safeCss(value,()=>null))}})}
 export function sanitizeSvgAsset(source:string):string|null{
-  const cleaned=sanitizeHtml(source,{allowedTags:safeSvgTags,allowedAttributes:safeSvgAttributes,allowedSchemes:[],allowProtocolRelative:false,disallowedTagsMode:'discard',nonTextTags:['script','style','foreignObject','iframe','object','embed','image']});
+  const cleaned=sanitizeHtml(source,{allowedTags:safeSvgTags,allowedAttributes:safeSvgAttributes,allowedSchemes:[],allowProtocolRelative:false,disallowedTagsMode:'discard',nonTextTags:['script','style','foreignObject','iframe','object','embed','image'],transformTags:svgTransformTags});
   const $=cheerio.load(cleaned,{xmlMode:true}),svg=$('svg').first();if(!svg.length)return null;
-  svg.find('[href]').each((_index,element)=>{const node=$(element),href=node.attr('href')??'';if(!/^#[A-Za-z0-9_.:-]+$/.test(href))node.removeAttr('href')});
+  sanitizeSvgReferences($);
   return $.xml(svg);
 }
 
@@ -106,7 +116,7 @@ function safeCss(css: string, rewrite: (path: string) => string | null): string 
   return css
     .replace(/@import[\s\S]*?(?:;|$)/gi, '')
     .replace(/expression\s*\([^)]*\)/gi, '')
-    .replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (_all, _q, url: string) => { const safe = rewrite(url); return safe ? `url("${safe}")` : 'url("")'; });
+    .replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (_all, _q, url: string) => { const value=url.trim();if(localSvgFragmentPattern.test(value))return`url("${value}")`;const safe = rewrite(value); return safe ? `url("${safe}")` : 'url("")'; });
 }
 export function sanitizeStylesheet(css:string,sourcePath:string,assetUrl:(path:string)=>string|null):string{const base=sourcePath.includes('/')?sourcePath.slice(0,sourcePath.lastIndexOf('/')):'';return safeCss(css,value=>{const path=normalizeAssetPath(base,value);return path?assetUrl(path):null})}
 
@@ -118,6 +128,7 @@ export function sanitizeDocument(source: string, entryPath: string, assetUrl: (p
     allowedTags, allowedAttributes, allowedSchemes: [], allowedSchemesByTag:{a:['https','mailto'],img:['data'],iframe:['https']}, allowProtocolRelative: false,
     disallowedTagsMode: 'discard', nonTextTags: ['script','style','textarea','xmp','noembed','noframes','plaintext','form','object','embed'],
     transformTags: {
+      ...svgTransformTags,
       a: (_tag, attrs) => {const href=safeLink(attrs.href??''),external=href.startsWith('https:')||href.startsWith('mailto:'),safeAttrs={...attrs};delete safeAttrs.target;return{tagName:'a',attribs:{...safeAttrs,href,'data-original-href':attrs.href??'',rel:'noopener noreferrer',...(external?{target:'_blank'}:{})}}},
       img: (_tag, attrs) => ({ tagName: 'img', attribs: { ...attrs, src: safeEmbeddedImage(attrs.src??'')??rewrite(attrs.src ?? '')??'', srcset: '' } }),
       iframe:(_tag,attrs)=>{const src=safeYoutubeEmbed(attrs.src??'');return src?{tagName:'iframe',attribs:{src,title:attrs.title??'YouTube video player',width:attrs.width??'560',height:attrs.height??'315',allow:'accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share',allowfullscreen:'',loading:'lazy',referrerpolicy:'strict-origin-when-cross-origin'}}:{tagName:'span',attribs:{}}},
@@ -127,7 +138,7 @@ export function sanitizeDocument(source: string, entryPath: string, assetUrl: (p
     exclusiveFilter: frame => ['form','object','embed'].includes(frame.tag),
   });
   const styles = $source('style').map((_i, el) => safeCss($source(el).html() ?? '', rewrite)).get().join('\n');
-  const $ = cheerio.load(cleaned); $('[data-block-id]').removeAttr('data-block-id');$('table').each((_i,el)=>{const table=$(el);if(!table.parent().hasClass('afterdraft-table-scroll'))table.wrap('<div class="afterdraft-table-scroll" role="region" aria-label="Scrollable table" tabindex="0"></div>')});$('*').each((_i, el) => {
+  const $ = cheerio.load(cleaned);sanitizeSvgReferences($);$('[data-block-id]').removeAttr('data-block-id');$('table').each((_i,el)=>{const table=$(el);if(!table.parent().hasClass('afterdraft-table-scroll'))table.wrap('<div class="afterdraft-table-scroll" role="region" aria-label="Scrollable table" tabindex="0"></div>')});$('*').each((_i, el) => {
     const node = $(el); for (const name of Object.keys(node.attr() ?? {})) if (/^on/i.test(name)) node.removeAttr(name);
     const inline = node.attr('style'); if (inline) node.attr('style', safeCss(inline, rewrite));
   });

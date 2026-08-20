@@ -8,9 +8,8 @@ import { db, now, row } from '../db/index.js';
 import { sanitizeDocument, sanitizeStylesheet, sanitizeSvgAsset } from '../ingest/sanitize.js';
 import { utf16ContextWindow, type AnchorContextWindow } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
-import { applyDocumentEditOperations } from '../edits/index.js';
 import { academicMimeTypes } from './bundle.js';
-import { acceptedAcademicRepairPlan } from './repairs.js';
+import { acceptedAcademicReviewPlan, applyAcceptedAcademicReview } from './repair-batches.js';
 
 export const stagedResultSchema=z.object({
   entryPath:z.string().min(1),
@@ -39,11 +38,11 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
   const job=row<Job>('SELECT id,source_kind,source_name,source_path,source_hash,target_document_id,result_json FROM import_jobs WHERE id=?',jobId);if(!job||!job.result_json)throw new Error('Import result is unavailable');
   const staged=stagedResultSchema.parse(JSON.parse(job.result_json)),jobRoot=join(config.dataDir,'imports',jobId);
   if(!inside(jobRoot,staged.bundleDirectory)||!inside(jobRoot,job.source_path))throw new Error('Import staging path is outside its job directory');
-  const repairPlan=acceptedAcademicRepairPlan(jobId),repairHash=repairPlan.operations.length?createHash('sha256').update(`academic-repair-v1\0${staged.derivativeHash}\0${repairPlan.signature}`).digest('hex'):staged.derivativeHash,targetScopedHash=job.target_document_id?createHash('sha256').update(`academic-target-v1\0${job.target_document_id}\0${repairHash}`).digest('hex'):repairHash;
+  const repairPlan=acceptedAcademicReviewPlan(jobId),repairHash=repairPlan.operations.length?createHash('sha256').update(`academic-review-revision-v1\0${staged.derivativeHash}\0${repairPlan.signature}`).digest('hex'):staged.derivativeHash,targetScopedHash=job.target_document_id?createHash('sha256').update(`academic-target-v1\0${job.target_document_id}\0${repairHash}`).digest('hex'):repairHash;
   const existing=job.target_document_id
     ? row<{id:string;document_id:string}>('SELECT id,document_id FROM document_versions WHERE document_id=? AND content_hash IN (?,?) ORDER BY version DESC LIMIT 1',job.target_document_id,repairHash,targetScopedHash)
     : row<{id:string;document_id:string}>('SELECT id,document_id FROM document_versions WHERE content_hash=?',repairHash);
-  if(existing){const time=now();db.exec('BEGIN IMMEDIATE');try{const updated=db.prepare("UPDATE import_jobs SET status='published',stage='published',document_id=?,document_version_id=?,progress=1,error=NULL,updated_at=?,completed_at=? WHERE id=? AND status='finalizing'").run(existing.document_id,existing.id,time,time,jobId);if(!updated.changes)throw new Error('Import publication state changed');for(const id of repairPlan.findingIds)db.prepare("UPDATE import_findings SET applied_at=?,updated_at=? WHERE id=? AND import_job_id=? AND decision='accepted'").run(time,time,id,jobId);db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}return{documentId:existing.document_id,versionId:existing.id,deduplicated:true}}
+  if(existing){const time=now();db.exec('BEGIN IMMEDIATE');try{const updated=db.prepare("UPDATE import_jobs SET status='published',stage='published',document_id=?,document_version_id=?,progress=1,error=NULL,updated_at=?,completed_at=? WHERE id=? AND status='finalizing'").run(existing.document_id,existing.id,time,time,jobId);if(!updated.changes)throw new Error('Import publication state changed');db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}return{documentId:existing.document_id,versionId:existing.id,deduplicated:true}}
   const contentHash=job.target_document_id?targetScopedHash:repairHash;
   const versionId=nanoid(),documentId=job.target_document_id??nanoid(),directory=join(config.dataDir,'documents',versionId),assetIds=new Map(staged.assets.map(asset=>[asset.sourcePath,nanoid()])),files=new Map<string,Buffer>();
   let transaction=false;
@@ -52,7 +51,7 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
     for(const asset of staged.assets){if(!inside(staged.bundleDirectory,asset.storagePath))throw new Error('Unsafe staged asset path');let content=await readFile(asset.storagePath);const extension=extname(asset.sourcePath).toLowerCase();if(!validAsset(extension,content))throw new Error(`Converted asset is invalid: ${asset.sourcePath}`);if(extension==='.svg'){const safe=sanitizeSvgAsset(content.toString('utf8'));if(!safe)throw new Error(`Converted SVG asset is invalid: ${asset.sourcePath}`);content=Buffer.from(safe)}files.set(asset.sourcePath,content)}
     for(const asset of staged.assets)if(extname(asset.sourcePath).toLowerCase()==='.css'){const content=files.get(asset.sourcePath)!;files.set(asset.sourcePath,Buffer.from(sanitizeStylesheet(content.toString('utf8'),asset.sourcePath,target=>assetIds.has(target)?`/api/assets/${versionId}/${assetIds.get(target)}`:null)))}
     let parsed=sanitizeDocument(files.get(staged.entryPath)!.toString('utf8'),staged.entryPath,path=>assetIds.has(path)?`/api/assets/${versionId}/${assetIds.get(path)}`:null);
-    if(repairPlan.operations.length){const canonicalBefore=parsed.canonicalText,repaired=applyDocumentEditOperations(parsed.html,repairPlan.operations,parsed.title);if(repaired.canonicalText!==canonicalBefore)throw new Error('An accepted presentation repair attempted to change scholarly content');parsed=repaired}
+    if(repairPlan.operations.length)parsed=await applyAcceptedAcademicReview(jobId,parsed.html,parsed.title)
     await mkdir(join(directory,'assets'),{recursive:true});const htmlPath=join(directory,'document.html'),sourceExtension=job.source_kind==='url'?'.url':extname(job.source_name).toLowerCase()||`.${job.source_kind}`,sourcePath=join(directory,`source${sourceExtension.replace(/[^.a-z0-9-]/g,'')||'.bin'}`);
     await copyFile(job.source_path,sourcePath);await chmod(sourcePath,0o444);await writeFile(htmlPath,parsed.html,{flag:'wx',mode:0o444});
     for(const asset of staged.assets){const id=assetIds.get(asset.sourcePath)!;await writeFile(join(directory,'assets',id),files.get(asset.sourcePath)!,{flag:'wx',mode:0o444})}
@@ -80,7 +79,6 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
     }
     db.prepare('INSERT INTO search_index(kind,entity_id,document_id,title,body,tags,model_id,created_at)VALUES(?,?,?,?,?,?,?,?)').run('article',versionId,documentId,parsed.title,parsed.canonicalText,'','',timestamp);
     const updated=db.prepare("UPDATE import_jobs SET status='published',stage='published',document_id=?,document_version_id=?,progress=1,error=NULL,updated_at=?,completed_at=? WHERE id=? AND status='finalizing'").run(documentId,versionId,timestamp,timestamp,jobId);if(!updated.changes)throw new Error('Import publication state changed');
-    for(const id of repairPlan.findingIds)db.prepare("UPDATE import_findings SET applied_at=?,updated_at=? WHERE id=? AND import_job_id=? AND decision='accepted'").run(timestamp,timestamp,id,jobId);
     db.exec('COMMIT');transaction=false;return{documentId,versionId,deduplicated:false};
   }catch(error){if(transaction)db.exec('ROLLBACK');await chmod(directory,0o755).catch(()=>{});await chmod(join(directory,'assets'),0o755).catch(()=>{});await rm(directory,{recursive:true,force:true}).catch(()=>{});throw error}
 }

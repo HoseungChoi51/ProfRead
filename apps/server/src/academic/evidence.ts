@@ -8,6 +8,10 @@ export interface AcademicOutlineItem {
   ref: string;
   tag: string;
   text: string;
+  fullLength: number;
+  excerptLength: number;
+  truncated: boolean;
+  structure?: Record<string, unknown>;
 }
 
 const defaultMaximumBytes = 64 * 1024 * 1024;
@@ -97,15 +101,26 @@ export function academicOutline(html: string, maximum = 2_000): AcademicOutlineI
     if (node.parents('[data-block-id]').length && !['img', 'svg', 'video', 'math'].includes(element.tagName)) return;
     const ref = node.attr('data-block-id');
     if (!ref) return;
-    const text = (element.tagName === 'img' ? node.attr('alt') : node.attr('alttext') ?? node.attr('aria-label') ?? node.text())
-      ?.replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 4_000) ?? '';
-    result.push({ ref, tag: element.tagName, text });
+    const tag=element.tagName.toLowerCase();
+    let structure:Record<string,unknown>|undefined,raw:string;
+    if(tag==='table'){
+      const tableRows=node.find('tr').toArray(),rows=tableRows.map(row=>$(row).find('th,td').toArray().map(cell=>$(cell).text().replace(/\s+/g,' ').trim()));
+      raw=rows.map(cells=>`| ${cells.join(' | ')} |`).join('\n');
+      structure={kind:'table',rowCount:rows.length,columnCount:Math.max(0,...rows.map(cells=>cells.length)),headerCellCount:node.find('th').length,dataCellCount:node.find('td').length};
+    }else if(tag==='pre'){
+      raw=node.text().replace(/\r\n?/g,'\n');
+      const lines=raw.split('\n');structure={kind:'preformatted',lineCount:lines.length,longestLine:Math.max(0,...lines.map(line=>line.length)),whitespacePreserved:true};
+    }else{
+      raw=(tag==='img'?node.attr('alt'):node.attr('alttext')??node.attr('aria-label')??node.text())?.replace(/\s+/g,' ').trim()??'';
+      if(tag==='figure')structure={kind:'figure',visualChildCount:node.find('img,svg,video,math').length,captionCount:node.children('figcaption').length};
+    }
+    const fullLength=raw.length,limit=4_000,candidate=raw.slice(0,limit-1),boundary=candidate.lastIndexOf(tag==='pre'?'\n':' '),truncated=fullLength>limit;
+    const text=truncated?`${boundary>0?candidate.slice(0,boundary):candidate}… [TRUNCATED; fullLength=${fullLength}]`:raw;
+    result.push({ref,tag,text,fullLength,excerptLength:text.length,truncated,...(structure?{structure}:{})});
   });
   return result;
 }
 
 export function visibleAcademicText(outline: AcademicOutlineItem[]): string {
-  return outline.filter(item => item.text).map(item => `[${item.ref}] <${item.tag}> ${item.text}`).join('\n\n');
+  return outline.filter(item => item.text).map(item => `[${item.ref}] <${item.tag}> metadata=${JSON.stringify({fullLength:item.fullLength,excerptLength:item.excerptLength,truncated:item.truncated,structure:item.structure??null})}\n${item.text}`).join('\n\n');
 }

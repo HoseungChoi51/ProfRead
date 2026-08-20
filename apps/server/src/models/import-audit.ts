@@ -60,6 +60,7 @@ const repairSchema = { anyOf:[
   strictObject({type:{type:'string',enum:['set-object-layout']},targetRef:target,width:{type:'string',enum:['auto','content','full']},alignment:{type:'string',enum:['left','center','right']},enlargeable:{type:'boolean'}}),
   strictObject({type:{type:'string',enum:['wrap-overflow']},targetRef:target}),
   strictObject({type:{type:'string',enum:['clear-fixed-dimensions']},targetRef:target}),
+  strictObject({type:{type:'string',enum:['restore-svg-semantics']},targetRef:target}),
   strictObject({type:{type:'string',enum:['join-source-fragments']},targetRef:target,sourceRefs:stringArray(4,2)}),
   strictObject({type:{type:'string',enum:['suppress-source-chrome']},targetRef:target,sourceRef:target}),
   strictObject({type:{type:'string',enum:['associate-caption']},targetRef:target,captionRef:target}),
@@ -103,10 +104,15 @@ export function validateImportAuditReport(value:unknown,evidenceRefs:Iterable<st
   const report=parseToolInput(value),evidence=new Set(evidenceRefs),targets=new Set(targetRefs),all=new Set([...evidence,...targets]);
   assertUniqueKnownRefs('reviewed evidence',report.coverage.reviewedRefs,evidence);
   assertUniqueKnownRefs('unreviewed evidence',report.coverage.unreviewedRefs,evidence);
+  const reviewed=new Set(report.coverage.reviewedRefs);
+  const overlap=report.coverage.unreviewedRefs.find(ref=>reviewed.has(ref));
+  if(overlap)throw new Error(`Import auditor coverage lists evidence as both reviewed and unreviewed: ${overlap}`);
   const covered=new Set([...report.coverage.reviewedRefs,...report.coverage.unreviewedRefs]);
   if(covered.size!==evidence.size)throw new Error('Import auditor coverage does not account for every supplied evidence reference');
   for(const finding of report.findings){
     assertUniqueKnownRefs('finding evidence',finding.evidenceRefs,evidence);
+    const unreviewedFindingEvidence=finding.evidenceRefs.find(ref=>!reviewed.has(ref));
+    if(unreviewedFindingEvidence)throw new Error(`Import auditor finding cites evidence it did not review: ${unreviewedFindingEvidence}`);
     assertUniqueKnownRefs('finding target',finding.targetRefs,targets);
     assertUniqueKnownRefs('requested evidence',finding.requestedEvidenceRefs,evidence);
     const repair=finding.suggestedRepair;if(!repair)continue;
@@ -147,7 +153,7 @@ export function importAuditReplayKey(input:Pick<ImportAuditRequest,'jobId'|'ordi
 }
 
 export function appendImportAuditReferenceContract(prompt:string,evidenceRefs:string[],targetRefs:string[]):string{
-  return`${prompt}\n\nAuthoritative reference namespaces for this call:\nAllowed evidenceRefs JSON: ${JSON.stringify(evidenceRefs)}\nAllowed targetRefs JSON: ${JSON.stringify(targetRefs)}\n- coverage.reviewedRefs and coverage.unreviewedRefs must partition exactly the allowed evidenceRefs. Never put a targetRef in coverage.\n- findings[].evidenceRefs and findings[].requestedEvidenceRefs may use only allowed evidenceRefs.\n- findings[].targetRefs and suggestedRepair targetRef, captionRef, or destinationRef fields may use only allowed targetRefs. Never put an evidenceRef in a target field.\n- If evidence supports a finding but no allowed targetRef applies, use an empty targetRefs array and null suggestedRepair.\nCopy reference strings exactly; do not invent, translate, shorten, or reclassify them.`;
+  return`${prompt}\n\nAuthoritative reference namespaces for this call:\nAllowed evidenceRefs JSON: ${JSON.stringify(evidenceRefs)}\nAllowed targetRefs JSON: ${JSON.stringify(targetRefs)}\n- coverage.reviewedRefs and coverage.unreviewedRefs must be disjoint and partition exactly the allowed evidenceRefs. Never put a targetRef in coverage.\n- findings[].evidenceRefs may cite only evidence listed in coverage.reviewedRefs. findings[].requestedEvidenceRefs may use only allowed evidenceRefs.\n- findings[].targetRefs and suggestedRepair targetRef, captionRef, or destinationRef fields may use only allowed targetRefs. Never put an evidenceRef in a target field.\n- If evidence supports a finding but no allowed targetRef applies, use an empty targetRefs array and null suggestedRepair.\nCopy reference strings exactly; do not invent, translate, shorten, or reclassify them.`;
 }
 
 export async function runImportAudit(input:ImportAuditRequest):Promise<ImportAuditResult>{

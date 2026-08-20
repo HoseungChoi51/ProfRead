@@ -9,13 +9,16 @@ export const academicImportDefaults = {
   autoApply: false,
 } as const;
 
-export const academicImportSettingsSchema = z.object({
+const storedAcademicImportSettingsSchema = z.object({
   enabled: z.boolean(),
   maxCalls: z.number().int().min(1).max(40),
   concurrency: z.number().int().min(1).max(2),
   sourceReference: z.boolean(),
   autoApply: z.boolean(),
 }).strict();
+export const academicImportSettingsSchema = storedAcademicImportSettingsSchema.superRefine((value,context)=>{
+  if(value.autoApply)context.addIssue({code:'custom',path:['autoApply'],message:'Automatic repair application is retired; approve each validated repair candidate in the import review.'});
+});
 
 export type AcademicImportSettings = z.infer<typeof academicImportSettingsSchema>;
 type StoredSetting = { value_json: string; updated_at: string };
@@ -29,8 +32,8 @@ export function academicImportSettings(): AcademicImportSettings {
   const stored = storedSetting();
   if (!stored) return { ...academicImportDefaults };
   try {
-    const parsed = academicImportSettingsSchema.safeParse(JSON.parse(stored.value_json));
-    return parsed.success ? parsed.data : { ...academicImportDefaults };
+    const parsed = storedAcademicImportSettingsSchema.safeParse(JSON.parse(stored.value_json));
+    return parsed.success ? { ...parsed.data, autoApply:false } : { ...academicImportDefaults };
   } catch {
     return { ...academicImportDefaults };
   }

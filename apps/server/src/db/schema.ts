@@ -1,3 +1,4 @@
+import { reviewWorkflowSchema } from './review-schema.js';
 export function createImportJobsTableSql(name='import_jobs',ifNotExists=true):string{
   if(!/^[a-z][a-z0-9_]*$/i.test(name))throw new Error('Invalid import-jobs table name');
   return `CREATE TABLE ${ifNotExists?'IF NOT EXISTS ':''}${name} (
@@ -107,6 +108,7 @@ CREATE TABLE IF NOT EXISTS import_findings (
  severity TEXT NOT NULL CHECK(severity IN ('info','warning','error')),
  title TEXT NOT NULL,
  description TEXT NOT NULL,
+ source_comparison TEXT NOT NULL DEFAULT '',
  target_ref TEXT,
  evidence_json TEXT NOT NULL DEFAULT '[]',
  repair_json TEXT,
@@ -120,6 +122,7 @@ CREATE TABLE IF NOT EXISTS import_findings (
 );
 CREATE INDEX IF NOT EXISTS import_jobs_created_at_idx ON import_jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS import_findings_job_idx ON import_findings(import_job_id,created_at);
+${reviewWorkflowSchema}
 CREATE TABLE IF NOT EXISTS model_settings (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, label TEXT NOT NULL, protocol TEXT NOT NULL, base_url TEXT, secret_env_name TEXT NOT NULL, config_json TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(provider_id));
 CREATE TABLE IF NOT EXISTS model_definitions (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, label TEXT NOT NULL, protocol TEXT NOT NULL, context_window INTEGER NOT NULL, max_output INTEGER NOT NULL, capabilities_json TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 100, enabled INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS model_profiles (name TEXT PRIMARY KEY, model_ids_json TEXT NOT NULL);

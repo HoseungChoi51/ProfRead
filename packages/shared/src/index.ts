@@ -20,7 +20,7 @@ export type ModelProfile = z.infer<typeof modelProfileSchema>;
 
 export const taskActionSchema = z.enum([
   'define','explain','eli14','ask','polish-note','visualize','research','summarize','tldr','half-page','visual-recap','compact','document-write','review-summary',
-  'import-triage','import-semantic-audit','import-visual-audit','import-adjudicate','import-verify-repair',
+  'import-triage','import-semantic-audit','import-visual-audit','import-adjudicate','import-verify-repair','import-repair-plan',
 ]);
 export type TaskAction = z.infer<typeof taskActionSchema>;
 export const taskModelRouteSchema = z.object({ action: taskActionSchema, modelId: z.string().min(1) });
@@ -44,6 +44,8 @@ export const documentEditOperationSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('set-alt-text'),blockId:z.string().min(1),text:z.string().trim().max(2000)}),
   z.object({type:z.literal('set-heading-level'),blockId:z.string().min(1),level:z.number().int().min(1).max(6)}),
   z.object({type:z.literal('set-object-layout'),blockId:z.string().min(1),width:z.enum(['auto','content','full']),alignment:z.enum(['left','center','right']),enlargeable:z.boolean(),folded:z.boolean()}),
+  z.object({type:z.literal('clear-fixed-dimensions'),blockId:z.string().min(1)}),
+  z.object({type:z.literal('restore-svg-semantics'),blockId:z.string().min(1)}),
   z.object({type:z.literal('move-object'),blockId:z.string().min(1),destinationBlockId:z.string().min(1),position:z.enum(['before','after'])}),
 ]);
 export type DocumentEditOperation=z.infer<typeof documentEditOperationSchema>;
@@ -177,6 +179,7 @@ export const importRepairProposalSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('set-object-layout'),targetRef:z.string().min(1).max(64),width:z.enum(['auto','content','full']),alignment:z.enum(['left','center','right']),enlargeable:z.boolean()}),
   z.object({type:z.literal('wrap-overflow'),targetRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('clear-fixed-dimensions'),targetRef:z.string().min(1).max(64)}),
+  z.object({type:z.literal('restore-svg-semantics'),targetRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('join-source-fragments'),targetRef:z.string().min(1).max(64),sourceRefs:z.array(z.string().min(1).max(64)).min(2).max(4)}),
   z.object({type:z.literal('suppress-source-chrome'),targetRef:z.string().min(1).max(64),sourceRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('associate-caption'),targetRef:z.string().min(1).max(64),captionRef:z.string().min(1).max(64)}),
@@ -185,6 +188,19 @@ export const importRepairProposalSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('draft-alt-text'),targetRef:z.string().min(1).max(64),text:z.string().min(1).max(1000)}),
 ]);
 export type ImportRepairProposal=z.infer<typeof importRepairProposalSchema>;
+export const academicRepairBatchProposalSchema=z.union([
+  importRepairProposalSchema,
+  z.object({
+    type:z.literal('derived-html-css-patch'),
+    targetRefs:z.array(z.string().min(1).max(64)).min(1).max(20),
+    patch:z.string().min(2).max(20_000),
+  }).strict(),
+]);
+export type AcademicRepairBatchProposal=z.infer<typeof academicRepairBatchProposalSchema>;
+export const academicReviewIssueDecisionSchema=z.enum(['accepted','dismissed','manual']);
+export type AcademicReviewIssueDecision=z.infer<typeof academicReviewIssueDecisionSchema>;
+export const academicReviewerPolicyActionSchema=z.enum(['require-stronger-evidence','lower-priority','increase-scrutiny','context-note']);
+export type AcademicReviewerPolicyAction=z.infer<typeof academicReviewerPolicyActionSchema>;
 export const importAuditFindingInputSchema=z.object({
   issueCode:importIssueCodeSchema,
   severity:z.enum(['info','warning','error']),
