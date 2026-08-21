@@ -130,6 +130,25 @@ async function captureOverview(page: Page, directory: string, view: ViewSpec, do
   return output;
 }
 
+function contextClip(object: RenderMetric, view: ViewSpec, documentHeight: number): { x: number; y: number; width: number; height: number } {
+  const boundedDocumentHeight = Math.max(1, Math.floor(documentHeight));
+  const height = Math.max(1, Math.min(view.height, boundedDocumentHeight));
+  const maximumY = Math.max(0, boundedDocumentHeight - height);
+  const y = Math.max(0, Math.min(Math.floor(object.rect.y - (height - object.rect.height) / 2), maximumY));
+  return { x: 0, y, width: view.width, height };
+}
+
+async function captureContext(page: Page, path: string, requestedY: number): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const clip = await page.evaluate(y => { scrollTo(0, y); return { x: scrollX, y: scrollY, width: innerWidth, height: innerHeight }; }, requestedY);
+      await page.screenshot({ path, animations: 'disabled' });
+      return clip;
+    } catch { /* retry one transient Chromium capture failure */ }
+  }
+  return null;
+}
+
 export async function renderHtml(body: Buffer, options: { maxObjects?: number; signal?: AbortSignal } = {}): Promise<OperationResult> {
   const executablePath = await chromiumPath(); if (!executablePath) throw new WorkerError('tool_unavailable', 'Chromium is unavailable.', 503);
   const root = await mkdtemp(join(tmpdir(), 'afterdraft-render-')), bundle = join(root, 'bundle'), renderDirectory = join(bundle, 'renders'); await mkdir(renderDirectory, { recursive: true });
@@ -145,21 +164,26 @@ export async function renderHtml(body: Buffer, options: { maxObjects?: number; s
       const page = await context.newPage(); page.on('requestfailed', request => { if (!failedResources.some(item => item.url === request.url())) failedResources.push({ url: request.url().slice(0, 500), ...(request.failure()?.errorText ? { reason: request.failure()!.errorText } : {}) }); }); page.on('console', message => { if (['error', 'warning'].includes(message.type()) && consoleErrors.length < 100) consoleErrors.push(message.text().slice(0, 1_000)); }); page.on('pageerror', error => { if (consoleErrors.length < 100) consoleErrors.push(error.message.slice(0, 1_000)); });
       await page.setContent(`<style>${renderCss}</style>${html}`, { waitUntil: 'load', timeout: 30_000 });
       await page.evaluate(async () => { await Promise.all([...document.images].map(image => image.complete ? Promise.resolve() : new Promise<void>(resolve => { image.addEventListener('load', () => resolve(), { once: true }); image.addEventListener('error', () => resolve(), { once: true }); }))); });
-      const measured = await metrics(page), maximum = Math.max(0, Math.min(200, options.maxObjects ?? 120)), selectedObjects = selectScreenshotMetrics(measured.objects, maximum), selectedRefs = selectedObjects.map(item => item.ref);
+      const measured = await metrics(page), maximum = Math.max(0, Math.min(200, options.maxObjects ?? 120)), selectedObjects = selectScreenshotMetrics(measured.objects, maximum), contextObjects = selectScreenshotMetrics(measured.objects.filter(item => item.tag !== 'math'), Math.min(40, maximum)), contextRefs = new Set(contextObjects.map(item => item.ref)), selectedRefs = selectedObjects.map(item => item.ref);
       await page.evaluate(refs => { for (const ref of refs) { const element = document.querySelector<HTMLElement>(`[data-afterdraft-qa-id="${CSS.escape(ref)}"]`); if (!element) continue; const rect = element.getBoundingClientRect(), label = document.createElement('span'); label.className = 'afterdraft-qa-label'; label.textContent = element.dataset.afterdraftQaId ?? ''; label.style.left = `${Math.max(0, rect.left + scrollX)}px`; label.style.top = `${Math.max(0, rect.top + scrollY - 13)}px`; document.body.append(label); } }, selectedRefs);
       const screenshots = await captureOverview(page, renderDirectory, view, Number(measured.document.scrollHeight));
-      const objectDirectory = join(bundle, 'objects', view.name); await mkdir(objectDirectory, { recursive: true }); const objectScreenshots: Array<{ ref: string; path: string }> = [];
+      const objectDirectory = join(bundle, 'objects', view.name), contextDirectory = join(bundle, 'contexts', view.name); await Promise.all([mkdir(objectDirectory, { recursive: true }), mkdir(contextDirectory, { recursive: true })]); const objectScreenshots: Array<{ ref: string; path: string }> = [], contextScreenshots: Array<{ ref: string; path: string; clip: { x: number; y: number; width: number; height: number } }> = [];
       for (const object of selectedObjects) {
         if (object.rect.height > 16_000 || object.rect.width > 16_000) { warnings.push({ code: 'object_screenshot_skipped', view: view.name, ref: object.ref, reason: 'oversized' }); continue; }
         const name = `${object.ref}.png`; try { await page.locator(`[data-afterdraft-qa-id="${object.ref}"]`).screenshot({ path: join(objectDirectory, name), animations: 'disabled' }); objectScreenshots.push({ ref: object.ref, path: `objects/${view.name}/${name}` }); } catch { warnings.push({ code: 'object_screenshot_failed', view: view.name, ref: object.ref }); }
+        if (contextRefs.has(object.ref)) {
+          const requested = contextClip(object, view, Number(measured.document.scrollHeight)), path = join(contextDirectory, name), clip = await captureContext(page, path, requested.y);
+          if (clip) contextScreenshots.push({ ref: object.ref, path: `contexts/${view.name}/${name}`, clip });
+          else warnings.push({ code: 'context_screenshot_failed', view: view.name, ref: object.ref });
+        }
       }
       const semanticEligible = new Set(measured.objects.filter(item => item.visible && screenshotTags.has(item.tag)).map(item => item.semanticObject?.rootRef ?? item.ref)).size;
       const capturedRefs = new Set(objectScreenshots.map(item => item.ref));
       const semanticCaptured = new Set(selectedObjects.filter(item => capturedRefs.has(item.ref) && screenshotTags.has(item.tag)).map(item => item.semanticObject?.rootRef ?? item.ref)).size;
-      viewResults.push({ viewport: view, document: measured.document, objects: measured.objects, screenshots, objectScreenshots, failedResources, consoleErrors, screenshotCoverage: { eligible: measured.objects.filter(item => item.visible).length, captured: objectScreenshots.length, limit: maximum, semanticEligible, semanticCaptured, semanticPrioritized: true } }); await context.close();
+      viewResults.push({ viewport: view, document: measured.document, objects: measured.objects, screenshots, contextScreenshots, objectScreenshots, failedResources, consoleErrors, screenshotCoverage: { eligible: measured.objects.filter(item => item.visible).length, captured: objectScreenshots.length, contextEligible: contextObjects.length, contextCaptured: contextScreenshots.length, contextLimit: Math.min(40, maximum), limit: maximum, semanticEligible, semanticCaptured, semanticPrioritized: true } }); await context.close();
     }
     await browser.close(); browser = undefined;
-    const manifest: Record<string, unknown> = { schemaVersion: 1, operation: 'render', inputContract: 'HTML must be self-contained; use data URLs for images and fonts. Relative, file, and network resources are blocked.', source: { kind: 'html', bytes: body.byteLength, sha256: sha256Bytes(body) }, renderer: { name: 'playwright-chromium', externalRequests: 'blocked', pageScripts: 'disabled', qaLabels: 'overview screenshots label measured objects with their q-ref' }, views: viewResults, warnings };
+    const manifest: Record<string, unknown> = { schemaVersion: 1, operation: 'render', inputContract: 'HTML must be self-contained; use data URLs for images and fonts. Relative, file, and network resources are blocked.', source: { kind: 'html', bytes: body.byteLength, sha256: sha256Bytes(body) }, renderer: { name: 'playwright-chromium', externalRequests: 'blocked', pageScripts: 'disabled', qaLabels: 'reading-view screenshots label measured objects with their q-ref' }, views: viewResults, warnings };
     manifest.files = await bundleFiles(bundle); await writeJson(join(bundle, 'manifest.json'), manifest); const archive = join(root, 'result.zip'); await createZip(bundle, archive, options.signal);
     await assertFileWithinWorkerOutputLimit(archive, 'Rendered HTML bundle exceeds the worker response limit.');
     return { root, archivePath: archive, downloadName: 'afterdraft-render-bundle.zip' };

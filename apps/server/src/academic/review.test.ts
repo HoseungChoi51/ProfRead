@@ -36,20 +36,24 @@ describe('academic review coverage planning',()=>{
     expect(plan.budgetExhausted).toBe(true);
   });
 
-  it('reserves source pages and one view of every semantic object before duplicate viewports',()=>{
-    const image=(id:string,kind:EvidenceItem['kind'],blockId?:string):EvidenceItem=>({id,label:id,kind,storagePath:`/${id}.png`,mimeType:'image/png',detail:'high',bytes:100,...(blockId?{blockId}:{})}),render=[image('overview-1','overview'),image('overview-2','overview'),image('f1-desktop','object','f1'),image('f1-narrow','object','f1'),image('f2-desktop','object','f2'),image('f2-narrow','object','f2')],source=[image('page-1','source-page'),image('page-20','source-page'),image('page-40','source-page')],prioritized=prioritizeReviewEvidence(render,source,7),selected=planImageBatches(prioritized,7);
-    expect(selected.selected.map(item=>item.id)).toEqual(expect.arrayContaining(['overview-1','overview-2','page-1','page-40','f1-desktop','f2-desktop']));
-    expect(selected.batches.some(batch=>batch.map(item=>item.blockId).filter(Boolean).join(',')==='f1,f1')).toBe(true);
+  it('reserves source pages and target context instead of unreadable full-page overviews',()=>{
+    const image=(id:string,kind:EvidenceItem['kind'],blockId?:string):EvidenceItem=>({id,label:id,kind,storagePath:`/${id}.png`,mimeType:'image/png',detail:'high',bytes:100,...(blockId?{blockId}:{})}),render=[image('overview-1','overview'),image('overview-2','overview'),image('f1-desktop','context','f1'),image('f1-narrow','context','f1'),image('f2-desktop','context','f2'),image('f2-narrow','context','f2'),image('f1-close','object','f1')],source=[image('page-1','source-page'),image('page-20','source-page'),image('page-40','source-page')],prioritized=prioritizeReviewEvidence(render,source,7),selected=planImageBatches(prioritized,7);
+    expect(selected.selected.map(item=>item.id)).toEqual(expect.arrayContaining(['page-1','page-40','f1-desktop','f1-narrow','f2-desktop','f2-narrow']));
+    expect(selected.selected.map(item=>item.id)).not.toContain('overview-1');
+    expect(selected.selected.map(item=>item.id)).not.toContain('overview-2');
+    expect(prioritized.map(item=>item.id)).not.toContain('overview-1');
+    expect(prioritized.map(item=>item.id)).not.toContain('overview-2');
+    expect(selected.batches.some(batch=>batch.filter(item=>item.blockId==='f1').length>=2)).toBe(true);
   });
 
   it('does not let an oversized item consume a selection slot',()=>{const item=(id:string,bytes:number):EvidenceItem=>({id,label:id,kind:'source-page',storagePath:`/${id}.png`,mimeType:'image/png',detail:'high',bytes}),plan=planImageBatches([item('too-large',20_000_001),item('a',10),item('b',10)],2);expect(plan.selected.map(value=>value.id)).toEqual(['a','b']);expect(plan.oversize).toBe(1)});
 
-  it('reports renderer semantic omissions and screenshot failures',()=>{expect(rendererCoverage({views:[{screenshotCoverage:{semanticEligible:5,semanticCaptured:4}},{screenshotCoverage:{semanticEligible:5,semanticCaptured:3}}],warnings:[{code:'object_screenshot_failed'}]})).toEqual({semanticEligible:10,semanticCaptured:7,missing:3,screenshotFailures:1})});
+  it('reports renderer semantic omissions and target screenshot failures',()=>{expect(rendererCoverage({views:[{screenshotCoverage:{semanticEligible:5,semanticCaptured:4}},{screenshotCoverage:{semanticEligible:5,semanticCaptured:3}}],warnings:[{code:'object_screenshot_failed'},{code:'context_screenshot_failed'}]})).toEqual({semanticEligible:10,semanticCaptured:7,missing:3,screenshotFailures:2})});
 
   it('keeps deterministic render metrics associated with exact block IDs',()=>{
-    const files:any[]=[{path:'renders/narrow.png',storagePath:'/tmp/narrow.png',bytes:80,sha256:'a'},{path:'objects/narrow/q1.png',storagePath:'/tmp/q1.png',bytes:40,sha256:'b'}];
-    const selected=selectRenderEvidence({views:[{viewport:{name:'narrow'},screenshots:['renders/narrow.png'],objects:[{ref:'q1',blockId:'svg-1',tag:'svg',semanticObject:{rootRef:'q0',rootBlockId:'figure-1',rootTag:'figure',nested:true},svgGeometry:{hasViewBox:true,contentOutsideViewport:false}}],objectScreenshots:[{ref:'q1',path:'objects/narrow/q1.png'}]}]},files);
-    expect(selected).toEqual(expect.arrayContaining([expect.objectContaining({kind:'overview',bytes:80}),expect.objectContaining({kind:'object',blockId:'figure-1',tag:'figure',bytes:40,metadata:expect.objectContaining({capturedTag:'svg',svgGeometry:expect.objectContaining({hasViewBox:true})})})]));
+    const files:any[]=[{path:'renders/narrow.png',storagePath:'/tmp/narrow.png',bytes:80,sha256:'a'},{path:'contexts/narrow/q1.png',storagePath:'/tmp/context-q1.png',bytes:60,sha256:'c'},{path:'objects/narrow/q1.png',storagePath:'/tmp/q1.png',bytes:40,sha256:'b'}];
+    const selected=selectRenderEvidence({views:[{viewport:{name:'narrow'},screenshots:['renders/narrow.png'],objects:[{ref:'q1',blockId:'svg-1',tag:'svg',semanticObject:{rootRef:'q0',rootBlockId:'figure-1',rootTag:'figure',nested:true},svgGeometry:{hasViewBox:true,contentOutsideViewport:false}}],contextScreenshots:[{ref:'q1',path:'contexts/narrow/q1.png',clip:{x:0,y:100,width:768,height:1400}}],objectScreenshots:[{ref:'q1',path:'objects/narrow/q1.png'}]}]},files);
+    expect(selected).toEqual(expect.arrayContaining([expect.objectContaining({kind:'overview',bytes:80}),expect.objectContaining({kind:'context',blockId:'figure-1',tag:'figure',bytes:60,metadata:expect.objectContaining({contextClip:{x:0,y:100,width:768,height:1400}})}),expect.objectContaining({kind:'object',blockId:'figure-1',tag:'figure',bytes:40,metadata:expect.objectContaining({capturedTag:'svg',svgGeometry:expect.objectContaining({hasViewBox:true})})})]));
   });
 
   it('uses published PDF page fallbacks as source evidence without duplicate reference files',()=>{

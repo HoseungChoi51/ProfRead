@@ -21,7 +21,7 @@ import { renderHtml } from './worker-client.js';
 export type EvidenceItem = {
   id: string;
   label: string;
-  kind: 'overview'|'object'|'source-page';
+  kind: 'overview'|'context'|'object'|'source-page';
   storagePath: string;
   mimeType: 'image/png'|'image/jpeg'|'image/webp';
   blockId?: string;
@@ -68,42 +68,44 @@ function imageMime(path:string):EvidenceItem['mimeType']{return /\.jpe?g$/i.test
 function evidenceId(prefix:string,path:string):string{return`${prefix}-${hash(path).slice(0,18)}`}
 
 export function selectRenderEvidence(manifest:Record<string,unknown>,files:ExtractedBundleFile[]):EvidenceItem[]{
-  const byPath=new Map(files.map(file=>[file.path,file])),overview:EvidenceItem[]=[],objects:EvidenceItem[]=[];
+  const byPath=new Map(files.map(file=>[file.path,file])),overview:EvidenceItem[]=[],contexts:EvidenceItem[]=[],objects:EvidenceItem[]=[];
   for(const view of asArray(manifest.views)){
     const name=String(view?.viewport?.name??'view'),metricItems=asArray(view?.objects),metrics=new Map(metricItems.map((item:any)=>[String(item.ref),item]));
     for(const path of asArray(view?.screenshots).map(String)){const file=byPath.get(path);if(file)overview.push({id:evidenceId('overview',`${name}:${path}`),label:`${humanize(name)} reading-view overview`,kind:'overview',storagePath:file.storagePath,mimeType:imageMime(path),detail:'high',bytes:file.bytes})}
-    for(const capture of asArray(view?.objectScreenshots)){
-      const path=String(capture?.path??''),file=byPath.get(path),metric=metrics.get(String(capture?.ref??''));if(!file||!metric)continue;
+    const addTargetCapture=(capture:any,kind:'context'|'object')=>{
+      const path=String(capture?.path??''),file=byPath.get(path),metric=metrics.get(String(capture?.ref??''));if(!file||!metric)return;
       const semantic=metric.semanticObject&&typeof metric.semanticObject==='object'?metric.semanticObject as Record<string,unknown>:undefined,
         capturedTag=String(metric.tag??''),tag=typeof semantic?.rootTag==='string'?semantic.rootTag:capturedTag,
         blockId=typeof semantic?.rootBlockId==='string'?semantic.rootBlockId:typeof metric.blockId==='string'?metric.blockId:undefined;
-      if(!['figure','table','img','svg','video','math'].includes(tag))continue;
+      if(!['figure','table','img','svg','video','math'].includes(tag))return;
       const rootRef=String(semantic?.rootRef??metric.ref??capture.ref),semanticMetrics=metricItems.filter((item:any)=>String(item?.semanticObject?.rootRef??item?.ref)===rootRef),svgDiagnostics=semanticMetrics.filter((item:any)=>item?.tag==='svg'&&item.svgGeometry).map((item:any)=>({ref:item.ref,blockId:item.blockId??null,geometry:item.svgGeometry})),metadata={viewport:name,captureRef:String(capture.ref),capturedTag,semanticObject:semantic??null,text:{fullLength:metric.textLength??null,excerptLength:typeof metric.text==='string'?metric.text.length:0,truncated:Boolean(metric.textTruncated)},structure:metric.structure??null,svgGeometry:metric.svgGeometry??null,svgDiagnostics,layout:{visible:metric.visible!==false,clippedX:Boolean(metric.clippedX),clippedY:Boolean(metric.clippedY),clientWidth:metric.clientWidth??null,scrollWidth:metric.scrollWidth??null,clientHeight:metric.clientHeight??null,scrollHeight:metric.scrollHeight??null,overflowX:metric.overflowX??null,overflowY:metric.overflowY??null}};
-      objects.push({id:evidenceId('object',`${name}:${path}`),label:`${humanize(name)} ${tag} ${String(capture.ref)}`,kind:'object',storagePath:file.storagePath,mimeType:imageMime(path),...(blockId?{blockId}:{}),tag,detail:tag==='table'||tag==='math'?'original':'high',bytes:file.bytes,metadata});
-    }
+      const item:EvidenceItem={id:evidenceId(kind,`${name}:${path}`),label:kind==='context'?`${humanize(name)} reading-view context around ${tag}`:`${humanize(name)} ${tag} close-up`,kind,storagePath:file.storagePath,mimeType:imageMime(path),...(blockId?{blockId}:{}),tag,detail:kind==='object'&&(tag==='table'||tag==='math')?'original':'high',bytes:file.bytes,metadata:{...metadata,...(capture.clip?{contextClip:capture.clip}:{})}};(kind==='context'?contexts:objects).push(item);
+    };
+    for(const capture of asArray(view?.contextScreenshots))addTargetCapture(capture,'context');
+    for(const capture of asArray(view?.objectScreenshots))addTargetCapture(capture,'object');
   }
   const nonMath=objects.filter(item=>item.tag!=='math'),math=objects.filter(item=>item.tag==='math');
   const sampledMath=math.filter((_item,index)=>index%Math.max(1,Math.ceil(math.length/16))===0).slice(0,16);
-  return[...overview,...nonMath,...sampledMath];
+  return[...contexts,...nonMath,...sampledMath,...overview];
 }
 
 export function selectSourceEvidence(files:ExtractedBundleFile[]):EvidenceItem[]{return files.filter(file=>/^reference\/page-.*\.(?:png|jpe?g)$/i.test(file.path)||/^assets\/pdf-page-\d+\.jpe?g$/i.test(file.path)).sort((a,b)=>a.path.localeCompare(b.path,undefined,{numeric:true})).map((file,index)=>({id:evidenceId('source',file.path),label:`Source rendering page ${index+1}`,kind:'source-page',storagePath:file.storagePath,mimeType:imageMime(file.path),detail:'high',bytes:file.bytes}))}
 function spread<T>(items:T[],maximum:number):T[]{if(maximum<=0||!items.length)return[];if(items.length<=maximum)return items;if(maximum===1)return[items[0]!];return Array.from({length:maximum},(_value,index)=>items[Math.round(index*(items.length-1)/(maximum-1))]!)}
-function evidenceGroup(item:EvidenceItem):string{return item.kind==='object'?item.blockId??String(item.metadata?.captureRef??item.id):item.id}
+function evidenceGroup(item:EvidenceItem):string{return ['context','object'].includes(item.kind)?item.blockId??String(item.metadata?.captureRef??item.id):item.id}
 export function prioritizeReviewEvidence(renderItems:EvidenceItem[],sourceItems:EvidenceItem[],maximumImages:number):EvidenceItem[]{
-  const overviews=renderItems.filter(item=>item.kind==='overview'),objects=renderItems.filter(item=>item.kind==='object'),reservedOverviews=spread(overviews,Math.min(2,maximumImages)),reservedSources=spread(sourceItems,Math.min(sourceItems.length,maximumImages>=4?2:maximumImages>=2?1:0)),quota=[...reservedOverviews,...reservedSources],groups=new Map<string,EvidenceItem[]>();
+  const overviews=renderItems.filter(item=>item.kind==='overview'),objects=renderItems.filter(item=>['context','object'].includes(item.kind)),reservedOverviews=objects.length?[]:spread(overviews,Math.min(2,maximumImages)),reservedSources=spread(sourceItems,Math.min(sourceItems.length,maximumImages>=4?2:maximumImages>=2?1:0)),quota=[...reservedOverviews,...reservedSources],groups=new Map<string,EvidenceItem[]>();
   for(const item of objects)groups.set(evidenceGroup(item),[...(groups.get(evidenceGroup(item))??[]),item]);
   const capacity=Math.max(0,maximumImages-quota.length),selected:EvidenceItem[]=[];for(const values of groups.values())if(values[0]&&selected.length<capacity)selected.push(values[0]);for(let pass=1;selected.length<capacity&&[...groups.values()].some(values=>values[pass]);pass++)for(const values of groups.values())if(values[pass]&&selected.length<capacity)selected.push(values[pass]!);
   const selectedIds=new Set([...quota,...selected].map(item=>item.id)),chosenByGroup=new Map<string,EvidenceItem[]>();for(const item of selected)chosenByGroup.set(evidenceGroup(item),[...(chosenByGroup.get(evidenceGroup(item))??[]),item]);const paired=[...chosenByGroup.values()].flat();
-  return[...quota,...paired,...renderItems.filter(item=>!selectedIds.has(item.id)),...sourceItems.filter(item=>!selectedIds.has(item.id))];
+  return[...quota,...paired,...renderItems.filter(item=>!selectedIds.has(item.id)&&(!objects.length||item.kind!=='overview')),...sourceItems.filter(item=>!selectedIds.has(item.id))];
 }
 export function planImageBatches(items:EvidenceItem[],maximumImages:number):{batches:EvidenceItem[][];selected:EvidenceItem[];oversize:number;budgetExhausted:boolean}{
   const batches:EvidenceItem[][]=[];let current:EvidenceItem[]=[],bytes=0,oversize=0,accepted=0,index=0;
-  while(index<items.length&&accepted<Math.max(0,maximumImages)){const first=items[index]!,key=evidenceGroup(first),unit:EvidenceItem[]=[first];index++;if(first.kind==='object')while(index<items.length&&unit.length<2&&items[index]!.kind==='object'&&evidenceGroup(items[index]!)===key)unit.push(items[index++]!);const usable=unit.filter(item=>{if(item.bytes>20_000_000){oversize++;return false}return true}).slice(0,Math.max(0,maximumImages)-accepted);if(!usable.length)continue;const unitBytes=usable.reduce((sum,item)=>sum+item.bytes,0);if(current.length&&(current.length+usable.length>3||bytes+unitBytes>50_000_000)){batches.push(current);current=[];bytes=0}for(const item of usable){if(current.length===3||bytes+item.bytes>50_000_000){if(current.length)batches.push(current);current=[];bytes=0}current.push(item);bytes+=item.bytes;accepted++}}
+  while(index<items.length&&accepted<Math.max(0,maximumImages)){const first=items[index]!,key=evidenceGroup(first),unit:EvidenceItem[]=[first];index++;if(['context','object'].includes(first.kind))while(index<items.length&&unit.length<2&&['context','object'].includes(items[index]!.kind)&&evidenceGroup(items[index]!)===key)unit.push(items[index++]!);const usable=unit.filter(item=>{if(item.bytes>20_000_000){oversize++;return false}return true}).slice(0,Math.max(0,maximumImages)-accepted);if(!usable.length)continue;const unitBytes=usable.reduce((sum,item)=>sum+item.bytes,0);if(current.length&&(current.length+usable.length>3||bytes+unitBytes>50_000_000)){batches.push(current);current=[];bytes=0}for(const item of usable){if(current.length===3||bytes+item.bytes>50_000_000){if(current.length)batches.push(current);current=[];bytes=0}current.push(item);bytes+=item.bytes;accepted++}}
   if(current.length)batches.push(current);return{batches,selected:batches.flat(),oversize,budgetExhausted:index<items.length};
 }
 
-export function rendererCoverage(manifest:Record<string,unknown>):{semanticEligible:number;semanticCaptured:number;missing:number;screenshotFailures:number}{let semanticEligible=0,semanticCaptured=0,screenshotFailures=0;for(const view of asArray(manifest.views)){semanticEligible+=Number(view?.screenshotCoverage?.semanticEligible??0)||0;semanticCaptured+=Number(view?.screenshotCoverage?.semanticCaptured??0)||0}screenshotFailures=asArray(manifest.warnings).filter((item:any)=>/^object_screenshot_(?:failed|skipped)$/.test(String(item?.code??''))).length;return{semanticEligible,semanticCaptured,missing:Math.max(0,semanticEligible-semanticCaptured),screenshotFailures}}
+export function rendererCoverage(manifest:Record<string,unknown>):{semanticEligible:number;semanticCaptured:number;missing:number;screenshotFailures:number}{let semanticEligible=0,semanticCaptured=0,screenshotFailures=0;for(const view of asArray(manifest.views)){semanticEligible+=Number(view?.screenshotCoverage?.semanticEligible??0)||0;semanticCaptured+=Number(view?.screenshotCoverage?.semanticCaptured??0)||0}screenshotFailures=asArray(manifest.warnings).filter((item:any)=>/^(?:object|context)_screenshot_(?:failed|skipped)$/.test(String(item?.code??''))).length;return{semanticEligible,semanticCaptured,missing:Math.max(0,semanticEligible-semanticCaptured),screenshotFailures}}
 
 type RecheckResult={reviewIssues:ReturnType<typeof listAcademicReviewIssues>;callsUsed:number;failedCalls:number};
 type StoredEvidenceIndexItem={id:string;relativePath:string;mimeType:'image/png'|'image/jpeg'|'image/webp'};
@@ -145,7 +147,7 @@ export async function recheckAcademicReviewIssues(jobId:string,issueIds:string[]
       prepared:Array<{issue:(typeof issues)[number];rawFindings:Array<Record<string,any>>;images:NonNullable<ImportAuditRequest['images']>;sourceComparisons:Array<{id:string;text:string}>;evidenceRefs:string[];inspectableRefs:string[]}>=[];
     for(const issue of issues){
       if(signal?.aborted)throw new Error('Academic issue recheck was cancelled');const rawFindings=issue.findingIds.map(id=>raw.get(id)).filter(Boolean) as Array<Record<string,any>>;if(rawFindings.some(item=>item.source==='deterministic'))continue;
-      const storedEvidenceIds=[...new Set(issue.evidence.map((item:any)=>typeof item?.id==='string'?item.id:'').filter(Boolean))],expectedInspectableRefs=[...new Set(issue.evidence.filter((item:any)=>['overview','object','source-page'].includes(String(item?.kind??''))||String(item?.mimeType??item?.mime_type??'').startsWith('image/')||typeof item?.url==='string'&&item.url.includes('/evidence/')).map((item:any)=>String(item.id)).filter(Boolean))],loaded=await evidenceImagesForIssue(jobId,storedEvidenceIds),images=loaded.images,comparisons=await sourceComparisonsForIssue(jobId,issue.targetRefs),sourceComparisons=comparisons.items,evidenceRefs=[...images.map(image=>image.id),...sourceComparisons.map(item=>item.id)],inspectableRefs=[...new Set([...expectedInspectableRefs,...loaded.inspectableRefs,...comparisons.inspectableRefs])];
+      const storedEvidenceIds=[...new Set(issue.evidence.map((item:any)=>typeof item?.id==='string'?item.id:'').filter(Boolean))],expectedInspectableRefs=[...new Set(issue.evidence.filter((item:any)=>['overview','context','object','source-page'].includes(String(item?.kind??''))||String(item?.mimeType??item?.mime_type??'').startsWith('image/')||typeof item?.url==='string'&&item.url.includes('/evidence/')).map((item:any)=>String(item.id)).filter(Boolean))],loaded=await evidenceImagesForIssue(jobId,storedEvidenceIds),images=loaded.images,comparisons=await sourceComparisonsForIssue(jobId,issue.targetRefs),sourceComparisons=comparisons.items,evidenceRefs=[...images.map(image=>image.id),...sourceComparisons.map(item=>item.id)],inspectableRefs=[...new Set([...expectedInspectableRefs,...loaded.inspectableRefs,...comparisons.inspectableRefs])];
       if(!evidenceRefs.length){adjudications.push({issueId:issue.id,verificationStatus:'unverified',reason:'Recheck was not allowed to guess: no independent source comparison or inspectable visual evidence is available.',repair:null,report:{skipped:'insufficient-independent-evidence'}});continue}
       prepared.push({issue,rawFindings,images,sourceComparisons,evidenceRefs,inspectableRefs});
     }

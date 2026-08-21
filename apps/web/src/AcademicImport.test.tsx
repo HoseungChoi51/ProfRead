@@ -14,6 +14,7 @@ import {
   importJobStageLabel,
   directRepairLabel,
   groupReviewIssues,
+  issueEvidenceForDisplay,
   normalizeAcademicWebReference,
   normalizeImportDetail,
   normalizeImportFinding,
@@ -182,6 +183,21 @@ describe('academic import job presentation',()=>{
     const unverified=renderToStaticMarkup(<ReviewIssueCard issue={{...issue,corroborated:false,verification:'unverified'}} selected={false} feedbackEnabled busy={false} onSelected={()=>{}} onSave={async()=>{}} onDirectRepair={async()=>{}} onDraftChange={()=>{}} onEvidence={()=>{}} onTarget={()=>{}} onRemember={()=>{}}/>);
     expect(unverified).not.toContain('Clear fixed dimensions');
     expect(unverified).toContain('Reviewer observation only');
+  });
+
+  it('shows target context and close-ups instead of scaling a full-document overview',()=>{
+    const evidence=[
+      {id:'overview',label:'Narrow reading-view overview',url:'/api/import-jobs/job/evidence/overview',kind:'overview' as const,detail:null},
+      {id:'context',label:'Narrow reading-view context around figure',url:'/api/import-jobs/job/evidence/context',kind:'context' as const,detail:null},
+      {id:'object',label:'Narrow figure close-up',url:'/api/import-jobs/job/evidence/object',kind:'object' as const,detail:null},
+    ];
+    expect(issueEvidenceForDisplay(evidence)).toEqual(evidence.slice(1));
+    expect(issueEvidenceForDisplay([evidence[0]!])).toEqual([evidence[0]]);
+    const issue=normalizeReviewIssue({id:'issue-context',issueCode:'figure-cropped',title:'Figure cropped',status:'pending',evidence});
+    const html=renderToStaticMarkup(<ReviewIssueCard issue={issue} selected={false} feedbackEnabled busy={false} onSelected={()=>{}} onSave={async()=>{}} onDirectRepair={async()=>{}} onDraftChange={()=>{}} onEvidence={()=>{}} onTarget={()=>{}} onRemember={()=>{}}/>);
+    expect(html).toContain('Narrow reading-view context around figure');
+    expect(html).toContain('Narrow figure close-up');
+    expect(html).not.toContain('Narrow reading-view overview');
   });
 
   it('lets an open commented issue enter batch planning before a repair exists and renders textual evidence',()=>{
