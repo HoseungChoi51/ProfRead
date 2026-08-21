@@ -2678,6 +2678,28 @@ export function Reader({
     });
     await loadArtifacts();
   }
+  async function deleteArtifact(artifact: Artifact) {
+    if (
+      !confirm(
+        `Remove “${artifactLabel(artifact)}”? This removes only this artifact; the article, highlights, and discussions remain.`,
+      )
+    )
+      return;
+    if (!acquireSubmission()) return;
+    setError("");
+    try {
+      await api(`/api/artifacts/${artifact.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ expectedVersion: artifact.version }),
+      });
+      setActiveEntry(null);
+      await loadArtifacts();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      releaseSubmission();
+    }
+  }
   async function acceptArtifactBasis(artifact: Artifact) {
     if (!acquireSubmission()) return;
     setError("");
@@ -3237,6 +3259,7 @@ export function Reader({
                 onPromote={() =>
                   promote(activeArtifact.id, !activeArtifact.promoted)
                 }
+                onDelete={() => void deleteArtifact(activeArtifact)}
                 onRegenerate={
                   activeArtifact.scope_type === "document" &&
                   ["tldr", "half-page", "visual-recap"].includes(
@@ -3758,6 +3781,7 @@ export function ArtifactCard({
   onReview,
   onReviewModelChange,
   onAddToWriter,
+  onDelete,
 }: {
   artifact: Artifact;
   busy: boolean;
@@ -3769,6 +3793,7 @@ export function ArtifactCard({
   onReview?: (() => void) | undefined;
   onReviewModelChange?: ((value: string) => void) | undefined;
   onAddToWriter?: (() => void) | undefined;
+  onDelete: () => void;
 }) {
   const freshness = artifact.freshness;
   return (
@@ -3787,6 +3812,9 @@ export function ArtifactCard({
           {onRegenerate && <button disabled={busy} onClick={onRegenerate}>Regenerate</button>}
           <button onClick={onPromote}>
             {artifact.promoted ? "Unpin" : "Pin"}
+          </button>
+          <button className="danger-link" disabled={busy} onClick={onDelete}>
+            Remove
           </button>
         </span>
       </header>

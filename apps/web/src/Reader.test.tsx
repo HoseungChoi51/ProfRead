@@ -685,6 +685,7 @@ describe("v0.2 Reader policies and cards", () => {
         onAcceptCurrent={() => {}}
         onReview={() => {}}
         onReviewModelChange={() => {}}
+        onDelete={() => {}}
       />,
     );
 
@@ -693,6 +694,7 @@ describe("v0.2 Reader policies and cards", () => {
     expect(html).toContain("Keep current");
     expect(html).toContain("Regenerate");
     expect(html).toContain("Review changes");
+    expect(html).toContain("Remove");
     expect(html).toContain("Automatic model");
     expect(html).toContain("The existing summary already covers");
   });

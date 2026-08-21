@@ -256,6 +256,23 @@ describe('v0.2 semantic reader data',()=>{
     expect(missingScope.statusCode).toBe(404);expect(missingScope.body).toContain('Thread artifact scope not found');
   });
 
+  it('removes only the expected artifact version and its search entry',async()=>{
+    const item=await anchoredDocument(`<title>Artifact removal ${randomUUID()}</title><p>Removal source</p>`),payload={documentVersionId:item.versionId,kind:'compact',scopeType:'document',scopeId:item.documentId,content:'Disposable artifact',sourceRefs:[item.versionId],promoted:true};
+    const created=await app.inject({method:'POST',url:'/api/artifacts',headers:writeHeaders(),payload});
+    expect(created.statusCode).toBe(201);
+    const artifact=JSON.parse(created.body) as{id:string;version:number};
+    expect(row('SELECT entity_id FROM search_index WHERE kind=\'artifact\' AND entity_id=?',artifact.id)).toBeTruthy();
+    const withoutCsrf=await app.inject({method:'DELETE',url:`/api/artifacts/${artifact.id}`,headers:readHeaders(),payload:{expectedVersion:artifact.version}});
+    expect(withoutCsrf.statusCode).toBe(403);
+    const stale=await app.inject({method:'DELETE',url:`/api/artifacts/${artifact.id}`,headers:writeHeaders(),payload:{expectedVersion:artifact.version+1}});
+    expect(stale.statusCode).toBe(409);expect(row('SELECT id FROM artifacts WHERE id=?',artifact.id)).toBeTruthy();
+    const removed=await app.inject({method:'DELETE',url:`/api/artifacts/${artifact.id}`,headers:writeHeaders(),payload:{expectedVersion:artifact.version}});
+    expect(removed.statusCode).toBe(200);expect(JSON.parse(removed.body)).toEqual({deleted:true,id:artifact.id});
+    expect(row('SELECT id FROM artifacts WHERE id=?',artifact.id)).toBeUndefined();
+    expect(row('SELECT entity_id FROM search_index WHERE kind=\'artifact\' AND entity_id=?',artifact.id)).toBeUndefined();
+    expect((JSON.parse((await app.inject({method:'GET',url:`/api/documents/${item.documentId}/artifacts`,headers:readHeaders()})).body) as Array<{id:string}>).some(value=>value.id===artifact.id)).toBe(false);
+  });
+
   it('counts important highlights only on the latest document version',async()=>{
     const first=await anchoredDocument('<title>Count versions</title><p>Old version passage</p>');
     const second=await importSource({buffer:Buffer.from('<title>Count versions</title><p>New version passage</p>'),filename:`count-${randomUUID()}.html`,mimeType:'text/html',documentId:first.documentId});

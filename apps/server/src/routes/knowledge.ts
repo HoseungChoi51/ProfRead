@@ -1,7 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { diagramSpecSchema, type SummaryBasis, type SummaryFreshness } from '@afterdraft/shared';
+import { config } from '../config.js';
 import { db, now, row, rows } from '../db/index.js';
 import { utf16ContextWindow } from '../anchors/context.js';
 import { latestSummaryReview, summaryBasis, summaryFreshness, validateSummaryArtifactContent } from '../models/summary-review.js';
@@ -62,6 +65,16 @@ function serializeArtifact(artifact:StoredArtifact,currentBasis:SummaryBasis|und
   };
 }
 
+function generatedImageUrls(contentJson:string):string[]{
+  return [...contentJson.matchAll(/\/api\/generated\/[A-Za-z0-9_-]+\.png/g)].map(match=>match[0]);
+}
+
+async function deleteGeneratedIfUnreferenced(url:string):Promise<void>{
+  if(row<{count:number}>('SELECT COUNT(*) count FROM artifacts WHERE instr(content_json,?)>0',url)?.count)return;
+  const name=url.split('/').pop();
+  if(name)await unlink(join(config.dataDir,'generated',name)).catch(()=>{});
+}
+
 export function registerKnowledgeRoutes(app:FastifyInstance):void{
   app.get('/api/documents/:id/artifacts',async(request,reply)=>{
     const documentId=(request.params as{id:string}).id,currentVersion=latestVersion(documentId);
@@ -107,6 +120,27 @@ export function registerKnowledgeRoutes(app:FastifyInstance):void{
       db.exec('COMMIT');
       return{ok:true,version,basis,freshness:{status:'current',reasons:[]} as SummaryFreshness};
     }catch(error){try{db.exec('ROLLBACK')}catch{/* transaction already closed */}throw error}
+  });
+
+  app.delete('/api/artifacts/:id',async(request,reply)=>{
+    const parsed=z.object({expectedVersion:z.number().int().positive()}).safeParse(request.body);
+    if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});
+    const artifactId=(request.params as{id:string}).id;
+    let generated:string[]=[];
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      const artifact=row<Pick<StoredArtifact,'version'|'content_json'>>('SELECT version,content_json FROM artifacts WHERE id=?',artifactId);
+      if(!artifact){db.exec('ROLLBACK');return reply.code(404).send({error:'Artifact not found'})}
+      if(artifact.version!==parsed.data.expectedVersion){db.exec('ROLLBACK');return reply.code(409).send({error:'Artifact changed; reload before removing it'})}
+      if(row('SELECT 1 FROM summary_reviews WHERE artifact_id=? AND status=\'pending\'',artifactId)){db.exec('ROLLBACK');return reply.code(409).send({error:'Artifact review is still running; wait for it to finish before removing the artifact'})}
+      generated=generatedImageUrls(artifact.content_json);
+      const removed=db.prepare('DELETE FROM artifacts WHERE id=? AND version=?').run(artifactId,parsed.data.expectedVersion);
+      if(!removed.changes){db.exec('ROLLBACK');return reply.code(409).send({error:'Artifact changed; reload before removing it'})}
+      db.prepare("DELETE FROM search_index WHERE kind='artifact' AND entity_id=?").run(artifactId);
+      db.exec('COMMIT');
+    }catch(error){try{db.exec('ROLLBACK')}catch{/* transaction already closed */}throw error}
+    await Promise.all(generated.map(deleteGeneratedIfUnreferenced));
+    return{deleted:true,id:artifactId};
   });
 
   app.patch('/api/artifacts/:id/promote',async(request,reply)=>{const parsed=z.object({promoted:z.boolean()}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const result=db.prepare('UPDATE artifacts SET promoted=? WHERE id=?').run(parsed.data.promoted?1:0,(request.params as{id:string}).id);return result.changes?{ok:true}:reply.code(404).send({error:'Artifact not found'});});
