@@ -197,4 +197,16 @@ describe('academic repair revision workflow',()=>{
     const[rebuilt]=await materializeAcademicReviewIssues(jobId,{rebuild:true});
     expect(rebuilt).toMatchObject({id:issue!.id,status:'dismissed',verificationStatus:'rejected',repairable:false});
   });
+
+  it('carries unresolved issues across a rebuild that omits them and relinks them when rediscovered',async()=>{
+    const source='<html><body><p>Text under review</p></body></html>',prepared=sanitizeDocument(source,'document.html',()=>null),target=cheerio.load(prepared.html)('p[data-block-id]').attr('data-block-id')!,{jobId}=await fixture(source),findingId=addFinding(jobId,{source:'deterministic',code:'missing-content',targetRef:target}),[issue]=await materializeAcademicReviewIssues(jobId);
+    expect(issue).toMatchObject({severity:'warning',status:'pending',verificationStatus:'confirmed',findingIds:[findingId]});
+
+    db.prepare('DELETE FROM import_findings WHERE id=?').run(findingId);
+    const[carried]=await materializeAcademicReviewIssues(jobId,{rebuild:true});
+    expect(carried).toMatchObject({id:issue!.id,status:'pending',verificationStatus:'confirmed',findingIds:[],verificationReason:expect.stringMatching(/carried forward.*did not re-report or verify/i)});
+
+    const rediscoveredId=addFinding(jobId,{source:'deterministic',code:'missing-content',targetRef:target}),[rediscovered]=await materializeAcademicReviewIssues(jobId,{rebuild:true});
+    expect(rediscovered).toMatchObject({id:issue!.id,status:'pending',verificationStatus:'confirmed',findingIds:[rediscoveredId],verificationReason:'Confirmed by deterministic validation.'});
+  });
 });
