@@ -40,6 +40,7 @@ export function seedModelSettings():void {
   insert.run('gpt-5.6-luna','openai','GPT-5.6 Luna','openai-responses',1_047_576,32_768,JSON.stringify(gpt56Capabilities),10);
   insert.run('gpt-5.6-terra','openai','GPT-5.6 Terra','openai-responses',1_047_576,32_768,JSON.stringify(gpt56Capabilities),20);
   insert.run('gpt-5.6-sol','openai','GPT-5.6 Sol','openai-responses',1_047_576,32_768,JSON.stringify(gpt56Capabilities),30);
+  insert.run('gpt-6-astra','openai','GPT-6 Astra','openai-responses',1_050_000,128_000,JSON.stringify(gpt56Capabilities),40);
   db.prepare("UPDATE model_definitions SET enabled=0 WHERE id IN ('gpt-4.1-mini','gpt-4.1')").run();
   for(const [name,modelIds] of Object.entries(defaultProfiles) as Array<[ModelProfile['name'],string[]]>){
     const current=row<{model_ids_json:string}>('SELECT model_ids_json FROM model_profiles WHERE name=?',name);
