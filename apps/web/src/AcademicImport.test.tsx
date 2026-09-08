@@ -111,7 +111,7 @@ describe('academic import job presentation',()=>{
 
   it('gates job actions by persisted state',()=>{
     expect(availableImportJobActions('converting',null)).toEqual(['review','cancel']);
-    expect(availableImportJobActions('failed',null)).toEqual(['review','retry']);
+    expect(availableImportJobActions('failed',null)).toEqual(['review','retry','cancel']);
     expect(availableImportJobActions('published','document-1')).toEqual(['open']);
   });
 

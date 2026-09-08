@@ -78,8 +78,10 @@ function classify(group:Group):{status:VerificationStatus;reason:string;corrobor
   const deterministic=group.items.some(item=>item.source==='deterministic'),explicit=group.items.some(item=>Boolean(item.corroborated));
   if(deterministic)return{status:'confirmed',reason:'Confirmed by deterministic validation.',corroborated:true};
   if(explicit)return{status:'confirmed',reason:'Confirmed by deterministic render measurements.',corroborated:true};
-  const ids=group.evidence.map(evidenceId),representationOnly=ids.length>0&&ids.every(id=>id==='outline'||/^text-/.test(id));
-  if(representationOnly&&representationOnlyCodes.has(group.items[0]!.issue_code))return{status:'rejected',reason:'Rejected as a lossy outline/text representation artifact; full DOM or visual evidence is required.',corroborated:false};
+  const ids=group.evidence.map(evidenceId),representationOnly=ids.length>0&&ids.every(id=>id==='outline'||/^text-/.test(id)),issueCode=group.items[0]!.issue_code,
+    convertedStructure=group.evidence.length>0&&group.evidence.every(item=>['outline','converted-text'].includes(evidenceKind(item)));
+  if(issueCode==='broken-reading-order'&&convertedStructure)return{status:'unverified',reason:'Converted heading and block structure is direct review evidence; reviewer confirmation is required before repair.',corroborated:false};
+  if(representationOnly&&representationOnlyCodes.has(issueCode))return{status:'rejected',reason:'Rejected as a lossy outline/text representation artifact; full DOM or visual evidence is required.',corroborated:false};
   return{status:'unverified',reason:'Requires stronger source, DOM, or visual evidence.',corroborated:false};
 }
 export async function materializeAcademicReviewIssues(jobId:string,options:{rebuild?:boolean}={}):Promise<AcademicReviewIssue[]>{

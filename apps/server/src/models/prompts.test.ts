@@ -95,6 +95,7 @@ describe('prompt settings API', () => {
     expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'request.polish-note')).toMatchObject({ category: 'Action requests', variables: ['draft'] });
     expect(JSON.parse(listed.body).find((item: { key: string }) => item.key === 'import.visual-audit')).toMatchObject({ category: 'Import review', variables: ['evidenceManifestJson','deterministicWarningsJson','contract'] });
     const modelSettings = await app.inject({ method: 'GET', url: '/api/settings/models', headers: { cookie } });
+    expect(JSON.parse(modelSettings.body).models).toContainEqual(expect.objectContaining({ id: 'gpt-6-astra', label: 'GPT-6 Astra', contextWindow: 1_050_000, maxOutput: 128_000, enabled: true }));
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'polish-note', modelId: 'gpt-5.6-luna' });
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'document-write', modelId: 'gpt-5.6-sol' });
     expect(JSON.parse(modelSettings.body).taskRoutes).toContainEqual({ action: 'review-summary', modelId: 'gpt-5.6-terra' });

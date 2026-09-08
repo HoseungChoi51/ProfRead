@@ -46,6 +46,15 @@ function addFinding(jobId:string,input:{source?:'deterministic'|'model';code:str
 }
 
 describe('academic repair revision workflow',()=>{
+  it('keeps converted heading structure reviewable without trusting it as content-loss evidence',async()=>{
+    const source='<html><body><h1>Paper title</h1><h6>Abstract</h6><p>Summary</p><h2>Introduction</h2></body></html>',prepared=sanitizeDocument(source,'document.html',()=>null),abstractId=cheerio.load(prepared.html)('h6[data-block-id]').attr('data-block-id')!,{jobId}=await fixture(source);
+    addFinding(jobId,{code:'broken-reading-order',targetRef:abstractId,evidence:[{id:'text-1',kind:'converted-text',label:'Text 1'}],repair:{type:'set-semantic-role',targetRef:abstractId,role:'abstract'}});
+    addFinding(jobId,{code:'missing-content',targetRef:abstractId,evidence:[{id:'text-2',kind:'converted-text',label:'Text 2'}]});
+    const issues=await materializeAcademicReviewIssues(jobId),readingOrder=issues.find(issue=>issue.issueCode==='broken-reading-order')!,missingContent=issues.find(issue=>issue.issueCode==='missing-content')!;
+    expect(readingOrder).toMatchObject({status:'pending',severity:'warning',verificationStatus:'unverified',verificationReason:expect.stringMatching(/heading and block structure is direct review evidence/i),repairable:false});
+    expect(missingContent).toMatchObject({status:'pending',severity:'info',verificationStatus:'rejected',verificationReason:expect.stringMatching(/lossy outline\/text representation artifact/i)});
+  });
+
   it('truth-checks and restores source SVG viewBox plus effective inline marker semantics by stable block ID',async()=>{
     const source='<html><body><figure><svg viewBox="0 0 100 50"><defs><marker id="arrow"><path d="M0 0L4 2L0 4z"/></marker></defs><path d="M0 25L90 25" style="stroke:black;marker-end:url(#arrow)"/></svg><figcaption>Architecture</figcaption></figure></body></html>';
     let figureId='',svgId='';
