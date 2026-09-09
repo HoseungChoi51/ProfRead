@@ -13,6 +13,9 @@ describe('import repair planner contract',()=>{
     expect(promptTemplate('system.import-review')).toContain('may guide presentation goals and constraints only within the server-provided repair allowlist');
     expect(promptTemplate('import.repair-plan')).toContain('Authenticated reviewer presentation instructions');
     expect(promptTemplate('system.import-review')).toContain('never authorize content changes');
+    expect(promptTemplate('system.import-repair-delegation')).toContain('user-confirmed');
+    expect(promptTemplate('system.import-repair-delegation')).toContain('nothing is applied until the reviewer previews and explicitly accepts');
+    expect(promptTemplate('import.delegated-repair-plan')).toContain('preserve their supplied HTML/text verbatim and order');
   });
   it('uses a strict provider tool schema',()=>{
     expectStrict(importRepairTool.schema);
@@ -45,12 +48,18 @@ describe('import repair planner contract',()=>{
     ]},['issue-1'],['table-1'])).toThrow(/more than one operation/);
   });
 
-  it('advertises and accepts only repairs supported by candidate validation',()=>{
+  it('keeps semantic operations unavailable to automatic planning but permits them for explicit delegation',()=>{
     const schema=JSON.stringify(importRepairTool.schema);
-    expect(schema).not.toMatch(/associate-caption|move-object|draft-alt-text/);
+    expect(schema).toMatch(/associate-caption|move-object|draft-alt-text/);
     expect(()=>validateImportRepairPlan({version:1,summary:'Unsafe.',proposals:[{
       issueId:'issue-1',rationale:'Invent text.',proposal:{type:'draft-alt-text',targetRef:'figure-1',text:'A guess.'},
     }]},['issue-1'],['figure-1'])).toThrow(/unsupported repair type/);
+    expect(validateImportRepairPlan({version:1,summary:'Reviewer-confirmed repair candidate.',proposals:[{
+      issueId:'issue-1',rationale:'Join the consecutive title fragments without rewriting either fragment.',proposal:{type:'join-source-fragments',targetRef:'title-1',sourceRefs:['title-2']},
+    }]},['issue-1'],['title-1','title-2'],'delegate').proposals[0]?.proposal).toEqual({type:'join-source-fragments',targetRef:'title-1',sourceRefs:['title-2']});
+    expect(()=>validateImportRepairPlan({version:1,summary:'Outside envelope.',proposals:[{
+      issueId:'issue-1',rationale:'Move a caption.',proposal:{type:'associate-caption',targetRef:'figure-1',captionRef:'invented'},
+    }]},['issue-1'],['figure-1'],'delegate')).toThrow(/unknown target/);
     expect(validateImportRepairPlan({version:1,summary:'No safe repair.',proposals:[{
       issueId:'issue-1',rationale:'Manual source editing is required.',proposal:null,
     }]},['issue-1'],['figure-1']).proposals[0]?.proposal).toBeNull();

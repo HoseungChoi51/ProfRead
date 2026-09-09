@@ -180,7 +180,7 @@ export const importRepairProposalSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('wrap-overflow'),targetRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('clear-fixed-dimensions'),targetRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('restore-svg-semantics'),targetRef:z.string().min(1).max(64)}),
-  z.object({type:z.literal('join-source-fragments'),targetRef:z.string().min(1).max(64),sourceRefs:z.array(z.string().min(1).max(64)).min(2).max(4)}),
+  z.object({type:z.literal('join-source-fragments'),targetRef:z.string().min(1).max(64),sourceRefs:z.array(z.string().min(1).max(64)).min(1).max(7)}),
   z.object({type:z.literal('suppress-source-chrome'),targetRef:z.string().min(1).max(64),sourceRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('associate-caption'),targetRef:z.string().min(1).max(64),captionRef:z.string().min(1).max(64)}),
   z.object({type:z.literal('move-object'),targetRef:z.string().min(1).max(64),destinationRef:z.string().min(1).max(64),position:z.enum(['before','after'])}),

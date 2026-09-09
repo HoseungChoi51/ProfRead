@@ -29,6 +29,7 @@ export type ImportRepairPlan=z.infer<typeof repairPlanSchema>;
 export type ImportRepairPlanRequest={
   jobId:string;
   ordinal:number;
+  strategy:'planner'|'delegate';
   issues:unknown;
   reviewerInstructions:unknown;
   targetFragments:unknown;
@@ -38,8 +39,8 @@ export type ImportRepairPlanRequest={
   signal?:AbortSignal;
 };
 export type ImportRepairPlanResult={plan:ImportRepairPlan;runId:string;modelId:string;inputTokens:number;outputTokens:number};
-const supportedRepairTypes=['set-object-layout','wrap-overflow','clear-fixed-dimensions','restore-svg-semantics','derived-html-css-patch'] as const;
-const supportedRepairTypeSet=new Set<string>(supportedRepairTypes);
+export const automaticRepairTypes=['set-object-layout','wrap-overflow','clear-fixed-dimensions','restore-svg-semantics','derived-html-css-patch'] as const;
+export const delegatedRepairTypes=[...automaticRepairTypes,'join-source-fragments','suppress-source-chrome','associate-caption','move-object','set-semantic-role','draft-alt-text'] as const;
 
 const string={type:'string'} as const;
 const strict=(properties:Record<string,unknown>)=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false} as const);
@@ -51,6 +52,12 @@ const proposal={anyOf:[
   strict({type:{type:'string',enum:['clear-fixed-dimensions']},targetRef:target}),
   strict({type:{type:'string',enum:['restore-svg-semantics']},targetRef:target}),
   strict({type:{type:'string',enum:['derived-html-css-patch']},targetRefs:{type:'array',items:string,minItems:1,maxItems:20},patch:string}),
+  strict({type:{type:'string',enum:['join-source-fragments']},targetRef:target,sourceRefs:{type:'array',items:string,minItems:1,maxItems:7}}),
+  strict({type:{type:'string',enum:['suppress-source-chrome']},targetRef:target,sourceRef:target}),
+  strict({type:{type:'string',enum:['associate-caption']},targetRef:target,captionRef:target}),
+  strict({type:{type:'string',enum:['move-object']},targetRef:target,destinationRef:target,position:{type:'string',enum:['before','after']}}),
+  strict({type:{type:'string',enum:['set-semantic-role']},targetRef:target,role:{type:'string',enum:['title','author','affiliation','abstract','keywords','heading','caption','body']}}),
+  strict({type:{type:'string',enum:['draft-alt-text']},targetRef:target,text:string}),
 ]} as const;
 export const importRepairTool={name:importRepairToolName,schema:strict({
   version:{type:'integer',enum:[1]},summary:string,
@@ -72,15 +79,19 @@ function validateImages(images:ImportAuditEvidenceImage[]):ImportAuditEvidenceIm
 }
 function proposalRefs(value:AcademicRepairBatchProposal):string[]{
   if(value.type==='derived-html-css-patch')return value.targetRefs;
+  if(value.type==='join-source-fragments')return[value.targetRef,...value.sourceRefs];
+  if(value.type==='suppress-source-chrome')return[value.targetRef,value.sourceRef];
+  if(value.type==='associate-caption')return[value.targetRef,value.captionRef];
+  if(value.type==='move-object')return[value.targetRef,value.destinationRef];
   return[value.targetRef];
 }
-export function validateImportRepairPlan(value:unknown,allowedIssueIds:Iterable<string>,targetRefs:Iterable<string>):ImportRepairPlan{
-  const plan=repairPlanSchema.parse(typeof value==='string'?JSON.parse(value):value),issues=new Set(allowedIssueIds),targets=new Set(targetRefs),seen=new Set<string>(),repairedIssues=new Set<string>();
+export function validateImportRepairPlan(value:unknown,allowedIssueIds:Iterable<string>,targetRefs:Iterable<string>,strategy:'planner'|'delegate'='planner'):ImportRepairPlan{
+  const plan=repairPlanSchema.parse(typeof value==='string'?JSON.parse(value):value),issues=new Set(allowedIssueIds),targets=new Set(targetRefs),supported=new Set<string>(strategy==='delegate'?delegatedRepairTypes:automaticRepairTypes),seen=new Set<string>(),repairedIssues=new Set<string>();
   for(const item of plan.proposals){
     if(!issues.has(item.issueId))throw new Error(`Import repair planner returned an unknown issue ID: ${item.issueId}`);
     if(!item.proposal)continue;
     if(repairedIssues.has(item.issueId))throw new Error(`Import repair planner returned more than one operation for issue: ${item.issueId}`);repairedIssues.add(item.issueId);
-    if(!supportedRepairTypeSet.has(item.proposal.type))throw new Error(`Import repair planner returned an unsupported repair type: ${item.proposal.type}`);
+    if(!supported.has(item.proposal.type))throw new Error(`Import repair planner returned an unsupported repair type: ${item.proposal.type}`);
     for(const ref of proposalRefs(item.proposal))if(!targets.has(ref))throw new Error(`Import repair planner returned an unknown target reference: ${ref}`);
     const signature=`${item.issueId}\0${JSON.stringify(item.proposal)}`;if(seen.has(signature))throw new Error('Import repair planner returned a duplicate proposal');seen.add(signature);
   }
@@ -88,8 +99,8 @@ export function validateImportRepairPlan(value:unknown,allowedIssueIds:Iterable<
 }
 
 function repairPrompt(input:ImportRepairPlanRequest):string{
-  const allowedOperations=[...supportedRepairTypes];
-  const rendered=renderPrompt('import.repair-plan',{
+  const allowedOperations=[...(input.strategy==='delegate'?delegatedRepairTypes:automaticRepairTypes)];
+  const rendered=renderPrompt(input.strategy==='delegate'?'import.delegated-repair-plan':'import.repair-plan',{
     issuesJson:JSON.stringify(input.issues),reviewerInstructionsJson:JSON.stringify(input.reviewerInstructions),
     targetFragmentsJson:JSON.stringify(input.targetFragments),allowedOperationsJson:JSON.stringify(allowedOperations),
     contract:promptTemplate('contract.import-repairs'),
@@ -101,9 +112,9 @@ export async function runImportRepairPlan(input:ImportRepairPlanRequest):Promise
   if(!Number.isInteger(input.ordinal)||input.ordinal<1||input.ordinal>40)throw new Error('Import repair ordinal must be between 1 and 40');
   if(!input.allowedIssueIds.length)throw new Error('Import repair planning requires at least one issue');
   const images=validateImages(input.images??[]),configured=taskModelId('import-repair-plan');if(!configured)throw new Error('No model is configured for import-repair-plan');
-  const prompt=repairPrompt(input),systemPrompt=promptTemplate('system.import-review'),fingerprint=createHash('sha256').update(JSON.stringify({modelId:configured,systemPrompt,prompt,images:images.map(image=>({id:image.id,mimeType:image.mimeType,detail:image.detail??'auto',hash:createHash('sha256').update(Buffer.from(image.data,'base64')).digest('hex')}))})).digest('hex'),baseRequestId=`academic:${input.jobId}:${input.ordinal}:import-repair-plan:${fingerprint.slice(0,32)}`,retryPrefix=`${baseRequestId}:retry-`;
+  const prompt=repairPrompt(input),systemPrompt=promptTemplate(input.strategy==='delegate'?'system.import-repair-delegation':'system.import-review'),fingerprint=createHash('sha256').update(JSON.stringify({modelId:configured,systemPrompt,prompt,images:images.map(image=>({id:image.id,mimeType:image.mimeType,detail:image.detail??'auto',hash:createHash('sha256').update(Buffer.from(image.data,'base64')).digest('hex')}))})).digest('hex'),baseRequestId=`academic:${input.jobId}:${input.ordinal}:import-repair-plan:${fingerprint.slice(0,32)}`,retryPrefix=`${baseRequestId}:retry-`;
   const replay=row<{id:string;model_id:string;response_text:string|null;input_tokens:number|null;output_tokens:number|null;status:string}>('SELECT id,model_id,response_text,input_tokens,output_tokens,status FROM model_runs WHERE request_id=? OR substr(request_id,1,?)=? ORDER BY CASE status WHEN \'completed\' THEN 0 WHEN \'running\' THEN 1 ELSE 2 END,created_at DESC LIMIT 1',baseRequestId,retryPrefix.length,retryPrefix);
-  if(replay?.status==='completed'&&replay.response_text)return{plan:validateImportRepairPlan(JSON.parse(replay.response_text),input.allowedIssueIds,input.targetRefs),runId:replay.id,modelId:replay.model_id,inputTokens:replay.input_tokens??0,outputTokens:replay.output_tokens??0};
+  if(replay?.status==='completed'&&replay.response_text)return{plan:validateImportRepairPlan(JSON.parse(replay.response_text),input.allowedIssueIds,input.targetRefs,input.strategy),runId:replay.id,modelId:replay.model_id,inputTokens:replay.input_tokens??0,outputTokens:replay.output_tokens??0};
   if(replay?.status==='running')throw new Error('Import repair request is already running');
   const requestId=replay?`${baseRequestId}:retry-${nanoid(8)}`:baseRequestId,decision=route({action:'import-repair-plan',input:'',hasVisual:Boolean(images.length),webEnabled:false,estimatedTokens:0,taskModelId:configured},models(),profiles()),model=decision.model,setting=providerSetting(model.providerId),apiKey=setting?.enabled?process.env[setting.secret_env_name]:undefined;
   if(!setting||!apiKey)throw new Error(`Provider for ${model.label} is not ready`);
@@ -120,7 +131,7 @@ export async function runImportRepairPlan(input:ImportRepairPlanRequest):Promise
       else if(event.type==='error')throw new Error(event.message);
     }
     if(!completed)throw new Error('Import repair planner stream ended before completion');if(calls.length!==1)throw new Error(calls.length?'Import repair planner returned more than one proposal report':'Import repair planner did not return its required proposal report');
-    const plan=validateImportRepairPlan(calls[0],input.allowedIssueIds,input.targetRefs),finished=now();
+    const plan=validateImportRepairPlan(calls[0],input.allowedIssueIds,input.targetRefs,input.strategy),finished=now();
     db.prepare('INSERT INTO tool_events(id,model_run_id,event_type,tool_name,payload_json,created_at)VALUES(?,?,?,?,?,?)').run(randomUUID(),runId,'tool_call',importRepairToolName,JSON.stringify(plan),finished);
     db.prepare('UPDATE model_runs SET status=\'completed\',latency_ms=?,input_tokens=?,output_tokens=?,provider_response_id=?,response_text=?,completed_at=? WHERE id=?').run(Date.now()-started,inputTokens,outputTokens,responseId??null,JSON.stringify(plan),finished,runId);
     db.prepare('UPDATE model_attempts SET status=\'completed\',completed_at=? WHERE id=?').run(finished,attemptId);

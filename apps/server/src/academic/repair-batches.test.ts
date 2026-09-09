@@ -13,6 +13,7 @@ import {
   activeAcademicReviewRevision,
   academicRepairBatch,
   academicRepairBatchPreview,
+  applyAcceptedAcademicReview,
   createAcademicRepairBatch,
   registerAcademicRepairPlanner,
   revertAcademicRepairBatch,
@@ -81,6 +82,28 @@ describe('academic repair revision workflow',()=>{
     expect(listAcademicReviewIssues(jobId)[0]).toMatchObject({status:'accepted',verificationStatus:'resolved'});
     revertAcademicRepairBatch(jobId,batch.id);
     expect(activeAcademicReviewRevision(jobId)).toBeNull();expect(listAcademicReviewIssues(jobId)[0]).toMatchObject({status:'pending',verificationStatus:'confirmed'});
+  });
+
+  it('delegates only user-confirmed issues, previews bounded semantic changes, and preserves confirmation on revert',async()=>{
+    const source='<html><body><p class="pdf-visual-fallback-note">Original PDF page 7</p><p>Article body.</p></body></html>',prepared=sanitizeDocument(source,'document.html',()=>null),helperId=cheerio.load(prepared.html)('.pdf-visual-fallback-note[data-block-id]').attr('data-block-id')!,{jobId}=await fixture(source);
+    expect(helperId).toBeTruthy();addFinding(jobId,{code:'template-chrome',targetRef:helperId});const[issue]=await materializeAcademicReviewIssues(jobId);
+    registerAcademicRepairPlanner(async()=>({authorizedTargetRefs:{[issue!.id]:[helperId]},modelRunId:'delegated-run',proposals:[{issueId:issue!.id,rationale:'Remove only the recognized converter helper note.',proposal:{type:'suppress-source-chrome',targetRef:helperId,sourceRef:helperId}}]}));
+    await expect(createAcademicRepairBatch(jobId,{issueIds:[issue!.id],strategy:'delegate'})).rejects.toThrow(/user-confirmed/i);
+    saveReviewerFeedback(jobId,issue!.id,{decision:'accepted',comment:'This is converter chrome, not article content.'});
+    registerAcademicRepairPlanner(async input=>{expect(input.strategy).toBe('delegate');return{authorizedTargetRefs:{[issue!.id]:[helperId]},modelRunId:'delegated-run',proposals:[{issueId:issue!.id,rationale:'Remove only the recognized converter helper note.',proposal:{type:'suppress-source-chrome',targetRef:helperId,sourceRef:helperId}}]}});
+    const batch=await createAcademicRepairBatch(jobId,{issueIds:[issue!.id],strategy:'delegate'});
+    expect(batch.validation).toMatchObject({canonicalUnchanged:false,inventoryUnchanged:true,delegated:true,userConfirmed:true,proposalSource:'delegated'});
+    expect(cheerio.load(await academicRepairBatchPreview(jobId,batch.id))('.pdf-visual-fallback-note')).toHaveLength(0);
+    await acceptAcademicRepairBatch(jobId,batch.id);expect(acceptedAcademicReviewPlan(jobId)).toMatchObject({delegated:true});expect(listAcademicReviewIssues(jobId)[0]).toMatchObject({status:'accepted',verificationStatus:'resolved'});
+    revertAcademicRepairBatch(jobId,batch.id);expect(listAcademicReviewIssues(jobId)[0]).toMatchObject({status:'accepted',verificationStatus:'confirmed',verificationReason:expect.stringMatching(/user-confirmed issue reopened/i)});
+  });
+
+  it('joins consecutive source fragments verbatim in preview and final publication replay',async()=>{
+    const source='<html><body><h1>What it means to be a mathematician</h1><h1>when AI does the math</h1><p>Article body.</p></body></html>',prepared=sanitizeDocument(source,'document.html',()=>null),$=cheerio.load(prepared.html),titleRefs=$('h1[data-block-id]').toArray().map(node=>$(node).attr('data-block-id')!),{jobId,preview}=await fixture(source);
+    expect(titleRefs).toHaveLength(2);addFinding(jobId,{code:'broken-reading-order',targetRef:titleRefs[0]!});const[issue]=await materializeAcademicReviewIssues(jobId);saveReviewerFeedback(jobId,issue!.id,{decision:'accepted',comment:'These are consecutive fragments of one printed title.'});
+    registerAcademicRepairPlanner(async()=>({authorizedTargetRefs:{[issue!.id]:titleRefs},proposals:[{issueId:issue!.id,rationale:'Join the two supplied title fragments in their existing order.',proposal:{type:'join-source-fragments',targetRef:titleRefs[0]!,sourceRefs:[titleRefs[1]!]}}]}));
+    const batch=await createAcademicRepairBatch(jobId,{issueIds:[issue!.id],strategy:'delegate'}),candidate=cheerio.load(await academicRepairBatchPreview(jobId,batch.id));expect(candidate('h1')).toHaveLength(1);expect(candidate('h1').text()).toBe('What it means to be a mathematician when AI does the math');
+    await acceptAcademicRepairBatch(jobId,batch.id);const published=cheerio.load((await applyAcceptedAcademicReview(jobId,preview)).html);expect(published('h1')).toHaveLength(1);expect(published('h1').text()).toBe('What it means to be a mathematician when AI does the math');
   });
 
   it('binds planner operations to their named issue, allows a safe partial plan, and rejects two operations for one issue',async()=>{

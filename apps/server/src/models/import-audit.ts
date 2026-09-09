@@ -61,7 +61,7 @@ const repairSchema = { anyOf:[
   strictObject({type:{type:'string',enum:['wrap-overflow']},targetRef:target}),
   strictObject({type:{type:'string',enum:['clear-fixed-dimensions']},targetRef:target}),
   strictObject({type:{type:'string',enum:['restore-svg-semantics']},targetRef:target}),
-  strictObject({type:{type:'string',enum:['join-source-fragments']},targetRef:target,sourceRefs:stringArray(4,2)}),
+  strictObject({type:{type:'string',enum:['join-source-fragments']},targetRef:target,sourceRefs:stringArray(7,1)}),
   strictObject({type:{type:'string',enum:['suppress-source-chrome']},targetRef:target,sourceRef:target}),
   strictObject({type:{type:'string',enum:['associate-caption']},targetRef:target,captionRef:target}),
   strictObject({type:{type:'string',enum:['move-object']},targetRef:target,destinationRef:target,position:{type:'string',enum:['before','after']}}),

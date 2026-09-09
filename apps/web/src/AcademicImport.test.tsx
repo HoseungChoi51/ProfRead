@@ -24,6 +24,7 @@ import {
   normalizeImportSourceSummary,
   normalizeRepairBatch,
   normalizeReviewIssue,
+  openReviewIssue,
   repairBatchRequest,
   adjudicationReviewFeedbackUpdates,
   reviewerPolicyPayload as rememberPolicyPayload,
@@ -217,12 +218,22 @@ describe('academic import job presentation',()=>{
     expect(issue.evidence[0]?.detail).toContain('&quot;source&quot;'.replaceAll('&quot;','"'));
     expect(JSON.stringify(issue)).not.toContain('/srv/private');
     expect(repairBatchRequest([issue.id,issue.id],'planner')).toEqual({issueIds:['issue-commented'],strategy:'planner'});
+    expect(repairBatchRequest([issue.id],'delegate')).toEqual({issueIds:['issue-commented'],strategy:'delegate'});
     expect(selectedReviewFeedbackUpdates(['issue-b','issue-a','issue-b'],{'issue-a':{comment:'Preserve symbols',note:'Compared with PDF'},'issue-b':{comment:'Move after paragraph 4',note:''}})).toEqual([
       {issueId:'issue-b',comment:'Move after paragraph 4',note:''},
       {issueId:'issue-a',comment:'Preserve symbols',note:'Compared with PDF'},
     ]);
     expect(adjudicationReviewFeedbackUpdates([],{'issue-a':{comment:'Preserve symbols',note:'Compared with PDF'},'issue-b':{comment:'Move after paragraph 4',note:''}}).map(item=>item.issueId).sort()).toEqual(['issue-a','issue-b']);
     expect(adjudicationReviewFeedbackUpdates(['issue-b'],{'issue-a':{comment:'Preserve symbols',note:'Compared with PDF'},'issue-b':{comment:'Move after paragraph 4',note:''}}).map(item=>item.issueId)).toEqual(['issue-b']);
+  });
+
+  it('keeps reviewer-confirmed issues open and explains delegated candidates that change structure',()=>{
+    const confirmed=normalizeReviewIssue({id:'confirmed',issueCode:'broken-reading-order',title:'Split title',status:'accepted',verificationStatus:'confirmed',feedback:{decision:'accepted',comment:'Join the title fragments.'}});
+    expect(openReviewIssue(confirmed)).toBe(true);
+    const issueHtml=renderToStaticMarkup(<ReviewIssueCard issue={confirmed} selected feedbackEnabled busy={false} onSelected={()=>{}} onSave={async()=>{}} onDirectRepair={async()=>{}} onDraftChange={()=>{}} onEvidence={()=>{}} onTarget={()=>{}} onRemember={()=>{}}/>);
+    expect(issueHtml).toContain('User-confirmed and open for AI delegation');expect(issueHtml).not.toContain('type="checkbox" disabled');
+    const batch=normalizeRepairBatch({id:'delegated',status:'draft',operations:[{id:'join',proposal:{type:'join-source-fragments',targetRef:'title-1',sourceRefs:['title-2']}}],validation:{canonicalUnchanged:false,inventoryUnchanged:true,errors:[],delegated:true,userConfirmed:true}}),batchHtml=renderToStaticMarkup(<RepairBatchPanel batches={[batch]} selectedId="delegated" busy={false} onSelect={()=>{}} onRefresh={()=>{}} onAccept={()=>{}} onRevert={()=>{}}/>);
+    expect(batch.operations[0]?.targetRefs).toEqual(['title-1','title-2']);expect(batchHtml).toContain('Structure/text changed · user-confirmed');expect(batchHtml).toContain('AI delegated');expect(batchHtml).toContain('approve only operations that preserve the article');
   });
 
   it('shows validated candidate operations and builds guidance-only memory payloads',()=>{
