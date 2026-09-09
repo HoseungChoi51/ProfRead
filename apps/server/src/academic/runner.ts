@@ -8,13 +8,14 @@ import { db, now, row, rows } from '../db/index.js';
 import { normalizeAssetPath, sanitizeDocument } from '../ingest/sanitize.js';
 import { readSafeZip } from '../ingest/zip.js';
 import { registerImportJobLifecycle } from '../routes/import-jobs.js';
-import { assetMime, extractAcademicBundle, stableAssetId, type AcademicManifest, type ExtractedBundle } from './bundle.js';
+import { assetMime, extractAcademicBundle, extractInspectionBundle, stableAssetId, type AcademicManifest, type ExtractedBundle } from './bundle.js';
 import { pdfReferenceEvidence } from './pdf-reference.js';
 import { publishAcademicImport, stagedResultSchema, type StagedAcademicResult } from './persistence.js';
-import { AcademicWorkerError, convertDocx, convertPdf, convertTex } from './worker-client.js';
+import { AcademicWorkerError, convertDocx, convertPdf, convertTex, inspectPdf } from './worker-client.js';
+import { runArticleBoundary } from './article-boundary.js';
 import type { AcademicSourceKind } from './source-kind.js';
 
-export interface AcademicJob{ id:string;source_kind:AcademicSourceKind;source_name:string;source_mime_type:string;source_path:string;source_hash:string;companion_pdf_path:string|null;entry_path:string|null;status:string;ai_review_enabled:number;max_calls:number;review_concurrency:number;auto_apply:number;source_reference:number }
+export interface AcademicJob{ id:string;source_kind:AcademicSourceKind;source_name:string;source_mime_type:string;source_path:string;source_hash:string;companion_pdf_path:string|null;entry_path:string|null;status:string;ai_review_enabled:number;max_calls:number;review_concurrency:number;auto_apply:number;source_reference:number;article_title?:string|null;article_fallback_url?:string|null;article_ai_boundary?:number;selected_page_start?:number|null;selected_page_end?:number|null }
 export interface AcademicReviewContext{job:AcademicJob;bundle:ExtractedBundle;staged:StagedAcademicResult;previewPath:string;signal:AbortSignal}
 export interface AcademicReviewOutcome{status:'completed'|'partial'|'failed';callCount:number}
 type ReviewHook=(context:AcademicReviewContext)=>Promise<AcademicReviewOutcome>;
@@ -74,7 +75,7 @@ async function convert(job:AcademicJob,directory:string,signal:AbortSignal):Prom
   const hook=sourceHooks.get(job.source_kind);if(hook)return hook(job,directory,signal);
   if(job.source_kind==='html')return extname(job.source_name).toLowerCase()==='.zip'||job.source_mime_type==='application/zip'?htmlZipBundle(job,directory):htmlBundle(job,directory);
   if(job.source_kind==='docx'){const archive=await convertDocx(job.source_path,job.source_name,Boolean(job.ai_review_enabled&&job.source_reference),signal);return extractAcademicBundle(archive,directory,job.source_hash)}
-  if(job.source_kind==='pdf'){const archive=await convertPdf(job.source_path,job.source_name,Boolean(job.ai_review_enabled&&job.source_reference),signal);return extractAcademicBundle(archive,directory,job.source_hash)}
+  if(job.source_kind==='pdf'){const range=job.article_title&&job.selected_page_start&&job.selected_page_end?{pageStart:job.selected_page_start,pageEnd:job.selected_page_end,title:job.article_title}:undefined,archive=await convertPdf(job.source_path,job.source_name,Boolean(job.ai_review_enabled&&job.source_reference),signal,range);return extractAcademicBundle(archive,directory,job.source_hash)}
   if(job.source_kind==='tex'||job.source_kind==='tex-zip'){const archive=await convertTex(job.source_path,job.source_name,job.entry_path??undefined,signal);return extractAcademicBundle(archive,directory,job.source_hash)}
   throw new Error(`No converter is registered for ${job.source_kind}`);
 }
@@ -87,6 +88,32 @@ async function attachCompanionReference(job:AcademicJob,bundle:ExtractedBundle,d
     bundle.manifest.warnings.push({code:'companion_reference_failed',severity:'warning',message:`The companion PDF could not be rendered for visual comparison: ${error instanceof Error?error.message:String(error)}`});
   }
   return bundle;
+}
+type PdfInspection={schemaVersion:number;title:string;pageCount:number;pages:Array<{page:number;textLength:number;excerpt:string;titleCoverage:number;thumbnailPath:string}>;suggestion?:{startPage:number;endPage:number;confidence:'high'|'low';source:'local'|'ai';rationale:string;evidencePages:number[]}};
+async function inspectArticle(job:AcademicJob,signal:AbortSignal):Promise<void>{
+  const directory=join(config.dataDir,'imports',job.id,'inspection');await rm(directory,{recursive:true,force:true});
+  const archive=await inspectPdf(job.source_path,job.source_name,job.article_title!,signal),bundle=await extractInspectionBundle(archive,directory,job.source_hash),file=bundle.files.find(candidate=>candidate.path==='inspection.json');
+  if(!file)throw new Error('PDF inspection did not include its page index');
+  const inspection=JSON.parse(await readFile(file.storagePath,'utf8')) as PdfInspection;
+  if(inspection.schemaVersion!==1||inspection.title!==job.article_title||!Number.isInteger(inspection.pageCount)||inspection.pageCount<1||inspection.pages.length!==inspection.pageCount||inspection.pages.some((page,index)=>page.page!==index+1||!/^pages\/page-\d{3}\.jpg$/.test(page.thumbnailPath)))throw new Error('PDF inspection returned an invalid page index');
+  let boundaryAssistance:{status:'completed'|'failed';modelId?:string;message?:string}|undefined;
+  if(job.article_ai_boundary&&(!inspection.suggestion||inspection.suggestion.confidence==='low')){
+    try{
+      const result=await runArticleBoundary({jobId:job.id,title:job.article_title!,pages:inspection.pages,directory,...(inspection.suggestion?{localSuggestion:inspection.suggestion}:{}),signal});
+      inspection.suggestion=result.suggestion;boundaryAssistance={status:'completed',modelId:result.modelId};
+    }catch(error){if(signal.aborted)throw error;boundaryAssistance={status:'failed',message:error instanceof Error?error.message:String(error)}}
+  }
+  const time=now(),selection={...inspection,inspectedAt:time,...(boundaryAssistance?{boundaryAssistance}:{})};
+  db.prepare("UPDATE import_jobs SET article_selection_json=?,status='awaiting-selection',stage='article-selection',progress=0.15,error=NULL,cancel_requested=0,updated_at=? WHERE id=? AND status='converting'").run(JSON.stringify(selection),time,job.id);
+}
+function titleTokenCoverage(actual:string,title:string):number{const expected=title.normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu)??[],available=new Set(actual.normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu)??[]);return expected.length?expected.filter(token=>available.has(token)).length/expected.length:0}
+async function articleWebFallback(job:AcademicJob,directory:string,signal:AbortSignal,reason:string):Promise<ExtractedBundle>{
+  const hook=sourceHooks.get('url'),locator=job.article_fallback_url;if(!hook||!locator)throw new Error(reason);
+  const locatorPath=join(config.dataDir,'imports',job.id,'fallback.url'),bytes=Buffer.from(locator);await writeFile(locatorPath,bytes,{mode:0o600});
+  const fallbackJob:AcademicJob={...job,source_kind:'url',source_name:locator,source_mime_type:'text/uri-list',source_path:locatorPath,source_hash:createHash('sha256').update(bytes).digest('hex')},bundle=await hook(fallbackJob,directory,signal),output=bundle.manifest.output as{title?:unknown}|undefined,actualTitle=typeof output?.title==='string'?output.title:'';
+  if(titleTokenCoverage(actualTitle,job.article_title??'')<0.8)throw new Error(`${reason} The fallback page title did not match the requested article.`);
+  bundle.manifest.source={...bundle.manifest.source,sha256:job.source_hash,originalKind:'pdf',originalSha256:job.source_hash,fallbackUsed:true,fallbackUrl:locator,fallbackReason:reason};
+  db.prepare('UPDATE import_jobs SET fallback_used=1,fallback_reason=?,updated_at=? WHERE id=?').run(reason,now(),job.id);return bundle;
 }
 function insertWarnings(jobId:string,warnings:AcademicManifest['warnings']):void{
   db.prepare("DELETE FROM import_findings WHERE import_job_id=? AND source='deterministic'").run(jobId);const insert=db.prepare('INSERT INTO import_findings(id,import_job_id,source,issue_code,severity,title,description,target_ref,evidence_json,repair_json,confidence,decision,model_run_id,created_at,updated_at)VALUES(?,?,\'deterministic\',?,?,?,?,?, ?,NULL,NULL,\'pending\',NULL,?,?)'),time=now();
@@ -101,10 +128,15 @@ async function prepare(job:AcademicJob,bundle:ExtractedBundle):Promise<{staged:S
 }
 async function run(jobId:string):Promise<void>{
   const claimed=db.prepare("UPDATE import_jobs SET status='converting',stage='converting',progress=0.05,error=NULL,cancel_requested=0,started_at=COALESCE(started_at,?),updated_at=? WHERE id=? AND status='queued'").run(now(),now(),jobId);if(!claimed.changes)return;
-  const job=row<AcademicJob>('SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,entry_path,status,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference FROM import_jobs WHERE id=?',jobId)!,
+  const job=row<AcademicJob>('SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,entry_path,status,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference,article_title,article_fallback_url,article_ai_boundary,selected_page_start,selected_page_end FROM import_jobs WHERE id=?',jobId)!,
     controller=new AbortController(),bundleDirectory=join(config.dataDir,'imports',jobId,`bundle-${nanoid(8)}`);controllers.set(jobId,controller);
   try{
-    stage(jobId,'conversion','Convert and inventory source','running',0.15);const bundle=await attachCompanionReference(job,await convert(job,bundleDirectory,controller.signal),bundleDirectory,controller.signal);
+    let fallbackBundle:ExtractedBundle|undefined;
+    if(job.source_kind==='pdf'&&job.article_title&&!job.selected_page_start){stage(jobId,'article-inspection','Inspect magazine pages','running',0.08);try{await inspectArticle(job,controller.signal);return}catch(error){if(controller.signal.aborted||!job.article_fallback_url)throw error;fallbackBundle=await articleWebFallback(job,bundleDirectory,controller.signal,`PDF inspection failed: ${error instanceof Error?error.message:String(error)}`)}}
+    stage(jobId,'conversion','Convert and inventory source','running',0.15);
+    let converted=fallbackBundle;
+    if(!converted){try{converted=await convert(job,bundleDirectory,controller.signal)}catch(error){if(controller.signal.aborted||!job.article_fallback_url)throw error;await rm(bundleDirectory,{recursive:true,force:true});converted=await articleWebFallback(job,bundleDirectory,controller.signal,`Selected PDF conversion failed: ${error instanceof Error?error.message:String(error)}`)}}
+    const bundle=await attachCompanionReference(job,converted,bundleDirectory,controller.signal);
     stage(jobId,'conversion','Convert and inventory source','completed',0.55);stage(jobId,'deterministic-review','Validate and normalize output','running',0.65);
     const {staged,previewPath}=await prepare(job,bundle),warnings=bundle.manifest.warnings??[];insertWarnings(jobId,warnings);
     const output=bundle.manifest.output as{title?:unknown}|undefined,documentTitle=typeof output?.title==='string'&&output.title.trim()?output.title.trim():null;
@@ -138,7 +170,7 @@ async function stagedBundle(job:AcademicJob,staged:StagedAcademicResult):Promise
 export async function rebuildAcademicImportReview(jobId:string,review:ReviewHook):Promise<{reviewIssuesRebuilt:true;qaStatus:string;callsUsed:number}>{
   const active=row<{id:string}>("SELECT id FROM import_review_revisions WHERE import_job_id=? AND status='active'",jobId);if(active)throw Object.assign(new Error('Revert accepted repair revisions before rebuilding the review'),{statusCode:409});
   const claimed=db.prepare("UPDATE import_jobs SET stage='review-rebuild',qa_status=CASE WHEN ai_review_enabled=1 THEN 'running' ELSE 'skipped' END,error=NULL,call_count=0,updated_at=? WHERE id=? AND status='review-ready' AND stage IN ('review','publish-failed')").run(now(),jobId);if(!claimed.changes)throw Object.assign(new Error('Import review is not ready to rebuild'),{statusCode:409});
-  const job=row<AcademicJob>('SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,entry_path,status,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference FROM import_jobs WHERE id=?',jobId)!,jobRoot=join(config.dataDir,'imports',jobId);
+  const job=row<AcademicJob>('SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,entry_path,status,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference,article_title,article_fallback_url,article_ai_boundary,selected_page_start,selected_page_end FROM import_jobs WHERE id=?',jobId)!,jobRoot=join(config.dataDir,'imports',jobId);
   try{
     const result=row<{result_json:string|null}>('SELECT result_json FROM import_jobs WHERE id=?',jobId),staged=result?.result_json?stagedResultSchema.parse(JSON.parse(result.result_json)):null;if(!staged)throw new Error('Import result is unavailable');
     db.exec('BEGIN IMMEDIATE');try{db.prepare("UPDATE import_repair_batches SET status='stale',error='Review was rebuilt from the immutable conversion',updated_at=? WHERE import_job_id=? AND status='draft'").run(now(),jobId);db.prepare("UPDATE import_review_revisions SET status='stale' WHERE import_job_id=? AND status='candidate'").run(jobId);db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}

@@ -13,7 +13,7 @@ const openZip=promisify<Buffer,yauzl.Options,yauzl.ZipFile>(yauzl.fromBuffer);
 const allowedExtensions=new Set(['.html','.htm','.css','.json','.png','.jpg','.jpeg','.gif','.webp','.svg','.woff','.woff2','.ttf','.otf']);
 const manifestSchema=z.object({
   schemaVersion:z.number().int(),
-  operation:z.enum(['convert','render']),
+  operation:z.enum(['convert','render','inspect']),
   source:z.object({kind:z.string(),sha256:z.string().regex(/^[a-f0-9]{64}$/)}).passthrough(),
   output:z.object({entryPath:z.string().min(1)}).passthrough().optional(),
   converter:z.record(z.string(),z.unknown()).optional(),
@@ -35,7 +35,7 @@ function safeName(raw:string):string{
 }
 function streamFor(zip:yauzl.ZipFile,entry:yauzl.Entry):Promise<NodeJS.ReadableStream>{return new Promise((accept,reject)=>zip.openReadStream(entry,(error,stream)=>error||!stream?reject(error??new Error('Could not read worker bundle entry')):accept(stream)))}
 
-export async function extractVerifiedWorkerBundle(buffer:Buffer,directory:string,expectedSourceHash:string,operation:'convert'|'render'):Promise<VerifiedWorkerBundle>{
+export async function extractVerifiedWorkerBundle(buffer:Buffer,directory:string,expectedSourceHash:string,operation:'convert'|'render'|'inspect'):Promise<VerifiedWorkerBundle>{
   if(buffer.byteLength>config.limits.expandedBytes)throw new Error('Worker response exceeds the import expansion limit');
   await mkdir(directory,{recursive:true,mode:0o700});
   const zip=await openZip(buffer,{lazyEntries:true,decodeStrings:true,validateEntrySizes:true}),files:ExtractedBundleFile[]=[],seen=new Set<string>();
@@ -83,6 +83,12 @@ export async function extractAcademicBundle(buffer:Buffer,directory:string,expec
 export async function extractRenderBundle(buffer:Buffer,directory:string,expectedSourceHash:string):Promise<VerifiedWorkerBundle>{
   const bundle=await extractVerifiedWorkerBundle(buffer,directory,expectedSourceHash,'render');
   for(const file of bundle.files)if(file.path!=='manifest.json'&&!['.png','.json'].includes(extname(file.path).toLowerCase()))throw new Error(`Unsupported render evidence file: ${file.path}`);
+  return bundle;
+}
+
+export async function extractInspectionBundle(buffer:Buffer,directory:string,expectedSourceHash:string):Promise<VerifiedWorkerBundle>{
+  const bundle=await extractVerifiedWorkerBundle(buffer,directory,expectedSourceHash,'inspect');
+  for(const file of bundle.files)if(file.path!=='manifest.json'&&file.path!=='inspection.json'&&!['.jpg','.json'].includes(extname(file.path).toLowerCase()))throw new Error(`Unsupported inspection evidence file: ${file.path}`);
   return bundle;
 }
 

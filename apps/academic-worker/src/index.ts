@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { convertDocx, convertTex, type OperationResult } from './convert.js';
 import { WorkerError, errorMessage } from './errors.js';
 import { renderPdf } from './pdf.js';
-import { convertPdf } from './pdf-convert.js';
+import { convertPdf, inspectPdf } from './pdf-convert.js';
 import { chromiumPath, renderHtml } from './render.js';
 import { convertJats } from './jats.js';
 
@@ -30,7 +30,7 @@ export function createAcademicWorker() {
   return createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://academic-worker');
     if (request.method === 'GET' && url.pathname === '/health') return health(response);
-    if (request.method !== 'POST' || !['/v1/convert/docx', '/v1/convert/tex', '/v1/convert/jats', '/v1/convert/pdf', '/v1/render', '/v1/render/pdf'].includes(url.pathname)) return json(response, 404, { error: 'Not found' });
+    if (request.method !== 'POST' || !['/v1/convert/docx', '/v1/convert/tex', '/v1/convert/jats', '/v1/convert/pdf', '/v1/inspect/pdf', '/v1/render', '/v1/render/pdf'].includes(url.pathname)) return json(response, 404, { error: 'Not found' });
     if (active >= concurrency) { response.setHeader('retry-after', '5'); return json(response, 429, { error: 'Worker is busy', code: 'worker_busy' }); }
     active++; const controller = new AbortController();
     request.once('aborted', () => controller.abort());
@@ -40,7 +40,8 @@ export function createAcademicWorker() {
       if (url.pathname === '/v1/convert/docx') result = await convertDocx(input, { filename: url.searchParams.get('filename') ?? 'document.docx', includeReference: url.searchParams.get('reference') === 'true', referencePages: Number(url.searchParams.get('referencePages') ?? 60), signal: controller.signal });
       else if (url.pathname === '/v1/convert/tex') result = await convertTex(input, { filename: url.searchParams.get('filename') ?? 'source.tex', ...(url.searchParams.get('entry') ? { entry: url.searchParams.get('entry')! } : {}), signal: controller.signal });
       else if (url.pathname === '/v1/convert/jats') result = await convertJats(input, { filename: url.searchParams.get('filename') ?? 'article.xml', signal: controller.signal });
-      else if (url.pathname === '/v1/convert/pdf') result = await convertPdf(input, { filename: url.searchParams.get('filename') ?? 'paper.pdf', includeReference: url.searchParams.get('reference') === 'true', referencePages: Number(url.searchParams.get('referencePages') ?? 60), signal: controller.signal });
+      else if (url.pathname === '/v1/convert/pdf') result = await convertPdf(input, { filename: url.searchParams.get('filename') ?? 'paper.pdf', includeReference: url.searchParams.get('reference') === 'true', referencePages: Number(url.searchParams.get('referencePages') ?? 60), ...(url.searchParams.has('pageStart') ? { pageStart: Number(url.searchParams.get('pageStart')) } : {}), ...(url.searchParams.has('pageEnd') ? { pageEnd: Number(url.searchParams.get('pageEnd')) } : {}), ...(url.searchParams.get('title') ? { title: url.searchParams.get('title')! } : {}), signal: controller.signal });
+      else if (url.pathname === '/v1/inspect/pdf') result = await inspectPdf(input, { filename: url.searchParams.get('filename') ?? 'magazine.pdf', title: url.searchParams.get('title') ?? '', signal: controller.signal });
       else if (url.pathname === '/v1/render/pdf') result = await renderPdf(input, { filename: url.searchParams.get('filename') ?? 'source.pdf', pages: Number(url.searchParams.get('pages') ?? 60), signal: controller.signal });
       else result = await renderHtml(input, { maxObjects: Number(url.searchParams.get('maxObjects') ?? 120), signal: controller.signal });
       await archive(response, result);

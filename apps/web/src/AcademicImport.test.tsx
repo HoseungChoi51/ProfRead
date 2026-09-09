@@ -12,6 +12,7 @@ import {
   clampImportCallLimit,
   importFallbackGuidance,
   importJobStageLabel,
+  isImportJobTerminal,
   directRepairLabel,
   groupReviewIssues,
   issueEvidenceForDisplay,
@@ -92,6 +93,13 @@ describe('academic import job presentation',()=>{
     })]);
     expect(importJobStageLabel('ai-review')).toBe('AI/VLM review');
     expect(importJobStageLabel('fetching')).toBe('Fetching publication');
+    expect(importJobStageLabel('awaiting-selection')).toBe('Choose article pages');
+    expect(isImportJobTerminal('awaiting-selection')).toBe(true);
+  });
+
+  it('normalizes a private magazine page index into confirmable public thumbnails',()=>{
+    const detail=normalizeImportDetail({id:'article-job',source_name:'issue.pdf',source_kind:'pdf',status:'awaiting-selection',articleSelection:{title:'Target',pageCount:72,aiBoundary:true,pages:[{page:22,textLength:381,titleCoverage:1,excerpt:'Target',thumbnailUrl:'/api/import-jobs/article-job/article-pages/22/thumbnail'}],suggestion:{startPage:22,endPage:28,confidence:'high',source:'local',rationale:'Unique title.',evidencePages:[22,28]}}});
+    expect(detail.articleSelection).toEqual(expect.objectContaining({title:'Target',pageCount:72,aiBoundary:true,suggestion:expect.objectContaining({startPage:22,endPage:28,source:'local'}),pages:[expect.objectContaining({page:22,thumbnailUrl:'/api/import-jobs/article-job/article-pages/22/thumbnail'})]}));
   });
 
   it('summarizes PDF and publisher provenance without exposing internal paths',()=>{
