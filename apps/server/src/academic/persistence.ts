@@ -8,6 +8,7 @@ import { db, now, row } from '../db/index.js';
 import { sanitizeDocument, sanitizeStylesheet, sanitizeSvgAsset } from '../ingest/sanitize.js';
 import { utf16ContextWindow, type AnchorContextWindow } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
+import { refreshHtmlPublicationAssociations } from '../ingest/html-associations.js';
 import { academicMimeTypes } from './bundle.js';
 import { acceptedAcademicReviewPlan, applyAcceptedAcademicReview } from './repair-batches.js';
 
@@ -71,7 +72,7 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
     for(const asset of staged.assets){const id=assetIds.get(asset.sourcePath)!,content=files.get(asset.sourcePath)!;assetInsert.run(id,versionId,asset.sourcePath,createHash('sha256').update(content).digest('hex'),academicMimeTypes[extname(asset.sourcePath).toLowerCase()]!,join(directory,'assets',id),content.length)}
     const blockInsert=db.prepare('INSERT INTO blocks(id,document_version_id,ordinal,block_type,text_content,visual_data,start_offset,end_offset)VALUES(?,?,?,?,?,?,?,?)');for(const block of parsed.blocks)blockInsert.run(block.id,versionId,block.ordinal,block.type,block.text,block.visual??null,block.start,block.end);
     if(job.target_document_id){
-      const previous=row<{id:string}>('SELECT id FROM document_versions WHERE document_id=? AND id<>? ORDER BY version DESC LIMIT 1',documentId,versionId);
+      const previous=row<{id:string}>('SELECT id FROM document_versions WHERE document_id=? AND id<>? AND sanitized_html_path IS NOT NULL ORDER BY version DESC LIMIT 1',documentId,versionId);
       if(previous){
         const anchors=db.prepare('SELECT a.*,b.start_offset old_block_start FROM anchors a LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id WHERE a.document_version_id=? AND a.selector_json IS NULL').all(previous.id) as any[],sourceCandidates=db.prepare('SELECT id AS blockId,text_content AS text,start_offset AS start,end_offset AS end FROM blocks WHERE document_version_id=? ORDER BY ordinal').all(previous.id) as Array<{blockId:string;text:string;start:number;end:number}>;
         for(const anchor of anchors){
@@ -81,6 +82,7 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
           const prefix=match.status==='attached'?context!.prefix:anchor.prefix_text,suffix=match.status==='attached'?context!.suffix:anchor.suffix_text,start=(matched?.start??0)+match.startOffset,end=(matched?.start??0)+match.endOffset,id=nanoid();
           db.prepare('INSERT INTO anchors(id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset,block_type,status,migrated_from_id,created_at)VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,versionId,match.blockId,anchor.exact_quote,prefix,suffix,start,end,anchor.block_type,match.status,anchor.id,timestamp);db.prepare('UPDATE threads SET anchor_id=? WHERE anchor_id=?').run(id,anchor.id);const highlights=db.prepare('SELECT * FROM highlights WHERE anchor_id=?').all(anchor.id) as any[];for(const highlight of highlights)db.prepare('INSERT INTO highlights(id,anchor_id,checked,color,note,kind,created_at,updated_at)VALUES(?,?,?,?,?,?,?,?)').run(nanoid(),id,highlight.checked,highlight.color,highlight.note,highlight.kind,highlight.created_at,timestamp);
         }
+        refreshHtmlPublicationAssociations(previous.id,versionId);
       }
     }
     db.prepare('INSERT INTO search_index(kind,entity_id,document_id,title,body,tags,model_id,created_at)VALUES(?,?,?,?,?,?,?,?)').run('article',versionId,documentId,parsed.title,parsed.canonicalText,'','',timestamp);

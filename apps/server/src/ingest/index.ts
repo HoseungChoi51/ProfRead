@@ -8,6 +8,7 @@ import { sanitizeDocument, sanitizeStylesheet, sanitizeSvgAsset } from './saniti
 import { readSafeZip } from './zip.js';
 import { utf16ContextWindow, type AnchorContextWindow } from '../anchors/context.js';
 import { countExactContextOccurrences, reattach } from '../anchors/reattach.js';
+import { refreshHtmlPublicationAssociations } from './html-associations.js';
 
 const mimeTypes: Record<string, string> = { '.css':'text/css', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.gif':'image/gif', '.webp':'image/webp', '.svg':'image/svg+xml', '.woff':'font/woff', '.woff2':'font/woff2', '.ttf':'font/ttf', '.otf':'font/otf' };
 function validAsset(extension:string,content:Buffer):boolean{if(extension==='.css')return !content.subarray(0,512).includes(0);if(content.length<4)return false;if(extension==='.png')return content.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));if(extension==='.jpg'||extension==='.jpeg')return content[0]===0xff&&content[1]===0xd8;if(extension==='.gif')return content.subarray(0,6).toString('ascii')==='GIF87a'||content.subarray(0,6).toString('ascii')==='GIF89a';if(extension==='.webp')return content.subarray(0,4).toString('ascii')==='RIFF'&&content.subarray(8,12).toString('ascii')==='WEBP';if(extension==='.svg')return /<svg[\s>]/i.test(content.subarray(0,4096).toString('utf8').replace(/^\s*<\?xml[^>]*>/,''));if(extension==='.woff')return content.subarray(0,4).toString('ascii')==='wOFF';if(extension==='.woff2')return content.subarray(0,4).toString('ascii')==='wOF2';if(extension==='.ttf')return content.readUInt32BE(0)===0x00010000;if(extension==='.otf')return content.subarray(0,4).toString('ascii')==='OTTO';return false}
@@ -57,7 +58,7 @@ export async function importSource(input: { buffer: Buffer; filename: string; mi
     const blockInsert = db.prepare('INSERT INTO blocks (id,document_version_id,ordinal,block_type,text_content,visual_data,start_offset,end_offset) VALUES (?,?,?,?,?,?,?,?)');
     for (const block of parsed.blocks) blockInsert.run(block.id, versionId, block.ordinal, block.type, block.text, block.visual??null, block.start, block.end);
     if (input.documentId) {
-      const previous=row<{id:string}>('SELECT id FROM document_versions WHERE document_id=? AND id<>? ORDER BY version DESC LIMIT 1',documentId,versionId);
+      const previous=row<{id:string}>('SELECT id FROM document_versions WHERE document_id=? AND id<>? AND sanitized_html_path IS NOT NULL ORDER BY version DESC LIMIT 1',documentId,versionId);
       if(previous){
         const anchors=db.prepare('SELECT a.*,b.start_offset old_block_start FROM anchors a LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id WHERE a.document_version_id=? AND a.selector_json IS NULL').all(previous.id) as any[],sourceCandidates=db.prepare('SELECT id AS blockId,text_content AS text,start_offset AS start,end_offset AS end FROM blocks WHERE document_version_id=? ORDER BY ordinal').all(previous.id) as Array<{blockId:string;text:string;start:number;end:number}>;
         for(const anchor of anchors){
@@ -67,6 +68,7 @@ export async function importSource(input: { buffer: Buffer; filename: string; mi
           const prefix=match.status==='attached'?context!.prefix:anchor.prefix_text,suffix=match.status==='attached'?context!.suffix:anchor.suffix_text,globalStart=(matchedBlock?.start??0)+match.startOffset,globalEnd=(matchedBlock?.start??0)+match.endOffset,newId=nanoid();
           db.prepare(`INSERT INTO anchors(id,document_version_id,block_id,exact_quote,prefix_text,suffix_text,start_offset,end_offset,block_type,status,migrated_from_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(newId,versionId,match.blockId,anchor.exact_quote,prefix,suffix,globalStart,globalEnd,anchor.block_type,match.status,anchor.id,timestamp);db.prepare('UPDATE threads SET anchor_id=? WHERE anchor_id=?').run(newId,anchor.id);const highlights=db.prepare('SELECT * FROM highlights WHERE anchor_id=?').all(anchor.id) as any[];for(const highlight of highlights)db.prepare('INSERT INTO highlights(id,anchor_id,checked,color,note,kind,created_at,updated_at)VALUES(?,?,?,?,?,?,?,?)').run(nanoid(),newId,highlight.checked,highlight.color,highlight.note,highlight.kind,highlight.created_at,timestamp);
         }
+        refreshHtmlPublicationAssociations(previous.id,versionId);
       }
     }
     db.prepare('INSERT INTO search_index (kind,entity_id,document_id,title,body,tags,model_id,created_at) VALUES (?,?,?,?,?,?,?,?)').run('article', versionId, documentId, parsed.title, parsed.canonicalText, '', '', timestamp);

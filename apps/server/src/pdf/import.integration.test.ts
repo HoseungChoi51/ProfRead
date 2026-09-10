@@ -166,4 +166,16 @@ describe('PDF HTTP ingestion and checkpoint lifecycle',()=>{
     expect(worker.index).not.toHaveBeenCalled();expect(representation(id)?.error).toMatch(/source hash changed/);expect(representation(id)?.extraction_revision).toBe(revision);expect(pdfPages(id)).toEqual(before);
     expect(row<{status:string}>('SELECT status FROM pdf_index_jobs WHERE id=?',retried.json().jobId)?.status).toBe('failed');
   });
+  it('rejects replacing a current HTML article with a PDF-only version before calling the worker',async()=>{
+    const html=await importSource({buffer:Buffer.from(`<title>Keep HTML ${randomUUID()}</title><p>The current HTML article remains available.</p>`),filename:'keep.html',mimeType:'text/html'});
+    const created=await upload(pdf(),{documentId:html.documentId!}),job=await waitJob(created.jobId,'failed');
+    expect(job.error).toMatch(/Use Add PDF view/);expect(worker.prepare).not.toHaveBeenCalled();
+    expect(row<{count:number}>('SELECT COUNT(*) count FROM document_versions WHERE document_id=?',html.documentId!)!.count).toBe(1);
+  });
+  it('still permits a newer PDF-only version of an existing PDF-only article',async()=>{
+    const first=await upload(),original=await waitJob(first.jobId);await waitPdf(pdfFor(original));
+    const second=await upload(pdf(),{documentId:original.document_id}),updated=await waitJob(second.jobId);await waitPdf(pdfFor(updated));
+    expect(updated.document_id).toBe(original.document_id);expect(updated.document_version_id).not.toBe(original.document_version_id);
+    expect(row<{count:number}>('SELECT COUNT(*) count FROM document_versions WHERE document_id=?',original.document_id)!.count).toBe(2);
+  });
 });

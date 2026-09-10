@@ -35,6 +35,9 @@ async function materializeSource(job:PdfImportJob,signal:AbortSignal):Promise<{p
 
 export async function publishPdfImport(jobId:string,signal:AbortSignal){
   const job=row<PdfImportJob>('SELECT * FROM import_jobs WHERE id=?',jobId);if(!job)throw new Error('Import job not found');
+  if(job.target_document_id&&!job.pdf_target_version_id&&row<{sanitized_html_path:string|null}>('SELECT sanitized_html_path FROM document_versions WHERE document_id=? ORDER BY version DESC LIMIT 1',job.target_document_id)?.sanitized_html_path){
+    throw new Error('A PDF-only re-import cannot replace an HTML article. Use Add PDF view for the retained original, or import a changed PDF as a new article.');
+  }
   const source=await materializeSource(job,signal),range=job.selected_page_start&&job.selected_page_end?{pageStart:job.selected_page_start,pageEnd:job.selected_page_end}:undefined;
   const directory=join(config.dataDir,'imports',job.id,`pdf-prepare-${nanoid(8)}`);
   const bundle=await extractVerifiedWorkerBundle(await prepareReadingPdf(source.path,range,signal),directory,source.hash,'pdf-prepare');
