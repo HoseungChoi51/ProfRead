@@ -10,10 +10,10 @@ import { z } from 'zod';
 import { config } from '../config.js';
 
 const openZip=promisify<Buffer,yauzl.Options,yauzl.ZipFile>(yauzl.fromBuffer);
-const allowedExtensions=new Set(['.html','.htm','.css','.json','.png','.jpg','.jpeg','.gif','.webp','.svg','.woff','.woff2','.ttf','.otf']);
+const allowedExtensions=new Set(['.html','.htm','.css','.json','.png','.jpg','.jpeg','.gif','.webp','.svg','.woff','.woff2','.ttf','.otf','.pdf']);
 const manifestSchema=z.object({
   schemaVersion:z.number().int(),
-  operation:z.enum(['convert','render','inspect']),
+  operation:z.enum(['convert','render','inspect','pdf-prepare','pdf-index','pdf-crop']),
   source:z.object({kind:z.string(),sha256:z.string().regex(/^[a-f0-9]{64}$/)}).passthrough(),
   output:z.object({entryPath:z.string().min(1)}).passthrough().optional(),
   converter:z.record(z.string(),z.unknown()).optional(),
@@ -35,7 +35,7 @@ function safeName(raw:string):string{
 }
 function streamFor(zip:yauzl.ZipFile,entry:yauzl.Entry):Promise<NodeJS.ReadableStream>{return new Promise((accept,reject)=>zip.openReadStream(entry,(error,stream)=>error||!stream?reject(error??new Error('Could not read worker bundle entry')):accept(stream)))}
 
-export async function extractVerifiedWorkerBundle(buffer:Buffer,directory:string,expectedSourceHash:string,operation:'convert'|'render'|'inspect'):Promise<VerifiedWorkerBundle>{
+export async function extractVerifiedWorkerBundle(buffer:Buffer,directory:string,expectedSourceHash:string,operation:AcademicManifest['operation']):Promise<VerifiedWorkerBundle>{
   if(buffer.byteLength>config.limits.expandedBytes)throw new Error('Worker response exceeds the import expansion limit');
   await mkdir(directory,{recursive:true,mode:0o700});
   const zip=await openZip(buffer,{lazyEntries:true,decodeStrings:true,validateEntrySizes:true}),files:ExtractedBundleFile[]=[],seen=new Set<string>();

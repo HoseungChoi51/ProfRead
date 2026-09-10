@@ -5,7 +5,7 @@ import {
   type ModelDefinition,
   type ModelProvider,
   type TaskAction,
-} from '@afterdraft/shared';
+} from '@profread/shared';
 import { createHash } from 'node:crypto';
 import { nanoid } from 'nanoid';
 import { db, now, row } from '../db/index.js';

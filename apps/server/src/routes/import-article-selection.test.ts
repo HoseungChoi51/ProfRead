@@ -12,7 +12,7 @@ afterAll(()=>app.close());
 
 async function auth(){
   const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.2.22',payload:{password:'test-owner-password'}});
-  return{cookie:login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),'x-csrf-token':login.cookies.find(item=>item.name==='afterdraft_csrf')!.value};
+  return{cookie:login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),'x-csrf-token':login.cookies.find(item=>item.name==='profread_csrf')!.value};
 }
 
 describe('magazine article page selection',()=>{

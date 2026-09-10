@@ -17,7 +17,7 @@ let authAttempt=90;
 
 async function authenticatedHeaders(){
   const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:`127.0.1.${++authAttempt}`,payload:{password:'test-owner-password'}});
-  return{cookie:login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),'x-csrf-token':login.cookies.find(item=>item.name==='afterdraft_csrf')!.value};
+  return{cookie:login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),'x-csrf-token':login.cookies.find(item=>item.name==='profread_csrf')!.value};
 }
 
 function htmlUpload(filename:string,html:string,documentId?:string,aiReviewEnabled=false,autoApply=false):{body:Buffer;contentType:string}{
@@ -123,7 +123,7 @@ describe('academic HTML import lifecycle',()=>{
     const preview=await app.inject({method:'GET',url:job.previewUrl,headers:{cookie:headers.cookie}});
     expect(preview.statusCode).toBe(200);
     expect(preview.body).toContain(marker);
-    expect(preview.body).not.toContain('__AFTERDRAFT_NONCE__');
+    expect(preview.body).not.toContain('__PROFREAD_NONCE__');
     expect(preview.headers['content-security-policy']).toContain("default-src 'none'");
 
     const evidenceDirectory=join(config.dataDir,'imports',jobId,'evidence'),evidencePng=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);await mkdir(evidenceDirectory,{recursive:true});await writeFile(join(evidenceDirectory,'overview.png'),evidencePng);await writeFile(join(evidenceDirectory,'index.json'),JSON.stringify([{id:'overview-test',relativePath:'evidence/overview.png',mimeType:'image/png'},{id:'escape-test',relativePath:'../../outside.png',mimeType:'image/png'}]));
@@ -192,7 +192,7 @@ describe('academic HTML import lifecycle',()=>{
     const activated=await app.inject({method:'POST',url:`/api/import-jobs/${jobId}/repair-batches/${replacement.id}/accept`,headers,payload:{}});expect(activated.statusCode,activated.body).toBe(200);
     expect((await app.inject({method:'POST',url:`/api/import-jobs/${jobId}/repair-batches/${replacement.id}/rebuild`,headers,payload:{}})).statusCode).toBe(409);
     const published=await app.inject({method:'POST',url:`/api/import-jobs/${jobId}/finalize`,headers});expect(published.statusCode,published.body).toBe(200);const result=JSON.parse(published.body),stored=row<{sanitized_html_path:string}>('SELECT sanitized_html_path FROM document_versions WHERE id=?',result.versionId)!,html=await readFile(stored.sanitized_html_path,'utf8'),$=cheerio.load(html),table=$(`[data-block-id="${tableId}"]`);
-    expect(table.attr('data-afterdraft-layout-width')??table.closest('.afterdraft-table-scroll').attr('data-afterdraft-layout-width')).toBe('full');expect(table.text()).toContain(`Scholarly cell ${marker}`);expect($.text()).toContain(`Prose ${marker}`);expect($('math').text()).toContain('x=1');
+    expect(table.attr('data-profread-layout-width')??table.closest('.profread-table-scroll').attr('data-profread-layout-width')).toBe('full');expect(table.text()).toContain(`Scholarly cell ${marker}`);expect($.text()).toContain(`Prose ${marker}`);expect($('math').text()).toContain('x=1');
     expect(row<{applied_at:string|null}>('SELECT applied_at FROM import_findings WHERE id=?',findingId)?.applied_at).toBeNull();
     expect((await app.inject({method:'PATCH',url:`/api/import-jobs/${jobId}/review-issues/${issue.id}`,headers,payload:{decision:'dismissed'}})).statusCode).toBe(409);
   });

@@ -1,4 +1,4 @@
-import type { ModelDefinition, ModelProvider, ProviderRunRequest, RunEvent } from '@afterdraft/shared';
+import type { ModelDefinition, ModelProvider, ProviderRunRequest, RunEvent } from '@profread/shared';
 import { estimateModelRequestTokens } from './token-estimate.js';
 
 async function* sse(response: Response): AsyncIterable<{event?:string;data:string}> {

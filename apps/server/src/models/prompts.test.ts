@@ -82,7 +82,7 @@ describe('prompt settings API', () => {
       payload: { password: 'test-owner-password' },
     });
     const cookie = login.cookies.map(item => `${item.name}=${item.value}`).join('; ');
-    const csrf = login.cookies.find(item => item.name === 'afterdraft_csrf')!.value;
+    const csrf = login.cookies.find(item => item.name === 'profread_csrf')!.value;
     const headers = { cookie, 'x-csrf-token': csrf };
     const listed = await app.inject({ method: 'GET', url: '/api/settings/prompts', headers: { cookie } });
     expect(listed.statusCode).toBe(200);

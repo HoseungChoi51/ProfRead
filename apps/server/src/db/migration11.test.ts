@@ -27,7 +27,7 @@ describe('migration 11',()=>{
       process.env.AFTERDRAFT_SESSION_SECRET='test-session-secret-with-more-than-thirty-two-characters';
       await import(${JSON.stringify(moduleUrl)});
       const {DatabaseSync}=await import('node:sqlite');
-      const db=new DatabaseSync(${JSON.stringify(databasePath)});
+      const db=new DatabaseSync(${JSON.stringify(join(dataDir,'profread.sqlite'))});
       const names=table=>db.prepare('PRAGMA table_info('+table+')').all().map(column=>column.name);
       console.log(JSON.stringify({migration:Boolean(db.prepare('SELECT 1 FROM migrations WHERE version=11').get()),highlight:names('highlights'),thread:names('threads'),artifact:names('artifacts'),kinds:db.prepare('SELECT color,kind FROM highlights ORDER BY color').all()}));
     `;
@@ -70,7 +70,7 @@ describe('migration 11',()=>{
       process.env.AFTERDRAFT_SESSION_SECRET='test-session-secret-with-more-than-thirty-two-characters';
       await import(${JSON.stringify(moduleUrl)});
       const {DatabaseSync}=await import('node:sqlite');
-      const db=new DatabaseSync(${JSON.stringify(databasePath)});
+      const db=new DatabaseSync(${JSON.stringify(join(dataDir,'profread.sqlite'))});
       console.log(JSON.stringify(Object.fromEntries(db.prepare('SELECT id,block_id,start_offset,end_offset,status FROM anchors ORDER BY id').all().map(anchor=>[anchor.id,anchor]))));
     `,run=()=>spawnSync(process.execPath,['--import','tsx','--input-type=module','--eval',script],{cwd:resolve('.'),encoding:'utf8',timeout:5000}),first=run();
     expect(first.status,first.stderr).toBe(0);

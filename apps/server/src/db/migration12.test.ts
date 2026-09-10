@@ -33,7 +33,7 @@ describe('migration 12',()=>{
       process.env.AFTERDRAFT_SESSION_SECRET='test-session-secret-with-more-than-thirty-two-characters';
       await import(${JSON.stringify(moduleUrl)});
       const {DatabaseSync}=await import('node:sqlite');
-      const db=new DatabaseSync(${JSON.stringify(databasePath)});
+      const db=new DatabaseSync(${JSON.stringify(join(dataDir,'profread.sqlite'))});
       const columns=table=>db.prepare('PRAGMA table_info('+table+')').all().map(column=>column.name);
       const fails=callback=>{try{callback();return false}catch{return true}};
       db.prepare("INSERT OR IGNORE INTO threads(id,document_id,title,kind,created_at,updated_at)VALUES('writer-1','document-1','Writer','writer','now','now')").run();

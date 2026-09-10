@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { anchorSelectorSchema } from '@afterdraft/shared';
+import { sourceSelectorSchema } from '@profread/shared';
+import { createPdfAnchor, documentRepresentations, presentAnchoredItem } from '../pdf/repository.js';
+import { saveRepresentationProgress } from '../pdf/progress.js';
 import { db, now, row, rows } from '../db/index.js';
 import { importSource } from '../ingest/index.js';
 import { ensureContexts } from '../models/context-jobs.js';
@@ -13,7 +15,7 @@ import {effectiveVersion,readEffectiveHtml}from'../edits/effective.js';
 import{BRIDGE,MOVE_READER_CSS,READER_CSS}from'../ingest/sanitize.js';
 import{utf16ContextWindow}from'../anchors/context.js';
 
-const responsiveReaderStyle='<style id="afterdraft-responsive">html{overflow-x:hidden}body{box-sizing:border-box!important;width:min(calc(100% - clamp(2rem,6vw,6rem)),1200px)!important;max-width:none!important;margin:clamp(1.5rem,4vw,3rem) auto!important;padding:0!important}body *{box-sizing:border-box}pre,table{max-width:100%;overflow:auto}</style>';
+const responsiveReaderStyle='<style id="profread-responsive">html{overflow-x:hidden}body{box-sizing:border-box!important;width:min(calc(100% - clamp(2rem,6vw,6rem)),1200px)!important;max-width:none!important;margin:clamp(1.5rem,4vw,3rem) auto!important;padding:0!important}body *{box-sizing:border-box}pre,table{max-width:100%;overflow:auto}</style>';
 
 export function registerDocumentRoutes(app: FastifyInstance): void {
   app.get('/api/documents', async () => rows(`SELECT d.*, v.id version_id, v.version, v.token_estimate,
@@ -33,7 +35,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
       FROM documents d JOIN document_versions v ON v.document_id=d.id AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=d.id)
       LEFT JOIN reading_progress rp ON rp.document_id=d.id WHERE d.id=?`, id);
     if (!document) return reply.code(404).send({ error: 'Document not found' });
-    db.prepare('UPDATE documents SET last_opened_at=? WHERE id=?').run(now(), id); ensureContexts((document as {version_id:string}).version_id); return document;
+    db.prepare('UPDATE documents SET last_opened_at=? WHERE id=?').run(now(), id); const views=documentRepresentations(id,(document as {version_id:string}).version_id);if(views.representations.some(value=>value.kind==='html'))ensureContexts((document as {version_id:string}).version_id); return {...document as object,...views};
   });
   app.get('/api/documents/:id/versions', async request => rows('SELECT id,version,source_name,entry_path,token_estimate,created_at FROM document_versions WHERE document_id=? ORDER BY version DESC', (request.params as { id:string }).id));
   app.get('/api/documents/:id/tags',async request=>rows<{tag:string}>('SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag',(request.params as {id:string}).id).map(item=>item.tag));
@@ -41,7 +43,7 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   app.get('/api/versions/:id/content', async (request, reply) => {
     const version = effectiveVersion((request.params as { id:string }).id);
     if (!version) return reply.code(404).send('Not found');
-    const nonce = randomBytes(18).toString('base64url'); const source=await readEffectiveHtml(version.id),html=source.replace(/<script[^>]*nonce="__AFTERDRAFT_NONCE__"[^>]*>[^]*?<\/script>/gi,'').replace('</head>',`${responsiveReaderStyle}<style id="afterdraft-current">${READER_CSS}${MOVE_READER_CSS}</style></head>`).replace('</body>',`<script nonce="${nonce}">${BRIDGE}</script></body>`);
+    const nonce = randomBytes(18).toString('base64url'); const source=await readEffectiveHtml(version.id),html=source.replace(/<script[^>]*nonce="__(?:AFTERDRAFT|PROFREAD)_NONCE__"[^>]*>[^]*?<\/script>/gi,'').replace('</head>',`${responsiveReaderStyle}<style id="profread-current">${READER_CSS}${MOVE_READER_CSS}</style></head>`).replace('</body>',`<script nonce="${nonce}">${BRIDGE}</script></body>`);
     return reply.header('content-type','text/html; charset=utf-8').header('cache-control','private, no-store')
       .header('referrer-policy','strict-origin-when-cross-origin')
       .header('content-security-policy', `sandbox allow-scripts allow-same-origin allow-presentation; default-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'nonce-${nonce}'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'none'; form-action 'none'; base-uri 'none'`).send(html);
@@ -54,13 +56,13 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   });
   app.get('/api/generated/:imageId.png',async(request,reply)=>{const imageId=(request.params as {imageId:string}).imageId;if(!/^[A-Za-z0-9_-]+$/.test(imageId))return reply.code(400).send({error:'Invalid image ID'});try{return reply.header('content-type','image/png').header('cache-control','private, max-age=31536000, immutable').send(await readFile(join(config.dataDir,'generated',`${imageId}.png`)))}catch{return reply.code(404).send({error:'Generated image not found'})}});
   app.get('/api/documents/:id/blocks', async request => rows('SELECT b.* FROM blocks b JOIN document_versions v ON v.id=b.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?) ORDER BY ordinal', (request.params as {id:string}).id, (request.params as {id:string}).id));
-  app.get('/api/documents/:id/highlights',async request=>rows(`SELECT h.id,h.checked,h.color,h.kind,h.note,a.id anchor_id,a.block_id,a.exact_quote,a.prefix_text,a.suffix_text,a.status,a.start_offset-b.start_offset local_start_offset,a.end_offset-b.start_offset local_end_offset FROM highlights h JOIN anchors a ON a.id=h.anchor_id LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?)`,(request.params as {id:string}).id,(request.params as {id:string}).id));
+  app.get('/api/documents/:id/highlights',async request=>rows<any>(`SELECT h.id,h.checked,h.color,h.kind,h.note,a.id anchor_id,a.block_id,a.exact_quote,a.prefix_text,a.suffix_text,a.status,a.selector_json,a.representation_id,a.start_offset-b.start_offset local_start_offset,a.end_offset-b.start_offset local_end_offset FROM highlights h JOIN anchors a ON a.id=h.anchor_id LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND (a.selector_json IS NOT NULL OR v.version=(SELECT MAX(version) FROM document_versions WHERE document_id=?))`,(request.params as {id:string}).id,(request.params as {id:string}).id).map(presentAnchoredItem));
   app.get('/api/versions/:id/jobs',async request=>rows('SELECT id,kind,status,progress,error,updated_at FROM background_jobs WHERE document_version_id=? ORDER BY created_at DESC',(request.params as {id:string}).id));
 
   app.post('/api/anchors', async (request, reply) => {
-    const parsed = z.object({ documentVersionId:z.string(), selector:anchorSelectorSchema }).safeParse(request.body);
+    const parsed = z.object({ documentVersionId:z.string(), selector:sourceSelectorSchema }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const s=parsed.data.selector; const block=row<{ id:string; text_content:string;start_offset:number }>('SELECT id,text_content,start_offset FROM blocks WHERE id=? AND document_version_id=?',s.blockId,parsed.data.documentVersionId);
+    const s=parsed.data.selector;if('kind' in s)return reply.code(201).send(createPdfAnchor(parsed.data.documentVersionId,s)); const block=row<{ id:string; text_content:string;start_offset:number }>('SELECT id,text_content,start_offset FROM blocks WHERE id=? AND document_version_id=?',s.blockId,parsed.data.documentVersionId);
     if (!block) return reply.code(409).send({ error:'Anchor no longer matches this document version' });
     let localStart=0,prefix='',suffix='';
     if(s.blockType==='text'){
@@ -83,5 +85,5 @@ export function registerDocumentRoutes(app: FastifyInstance): void {
   });
   app.patch('/api/highlights/:id', async (request,reply)=>{const parsed=z.object({kind:z.enum(['important','question','comment']).optional(),note:z.string().max(2000).nullable().optional(),color:z.enum(['yellow','green','blue','pink']).optional(),checked:z.boolean().optional()}).refine(value=>Object.keys(value).length>0,'At least one field is required').safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});const id=(request.params as {id:string}).id,current=row<{kind:string;color:string;note:string|null}>('SELECT kind,color,note FROM highlights WHERE id=?',id);if(!current)return reply.code(404).send({error:'Highlight not found'});const legacyKind=parsed.data.color==='blue'?'question':parsed.data.color==='pink'?'comment':'important',kind=parsed.data.kind??(parsed.data.color?legacyKind:current.kind),note=parsed.data.note===undefined?current.note:parsed.data.note?.trim()||null;if(kind==='comment'&&!note)return reply.code(400).send({error:'Comment highlights require a non-empty note'});const color=kind==='important'?'yellow':kind==='question'?'blue':'pink',checked=kind!=='question';db.prepare('UPDATE highlights SET checked=?,note=?,color=?,kind=?,updated_at=? WHERE id=?').run(checked?1:0,note,color,kind,now(),id);return {ok:true,kind,note,color,checked};});
   app.delete('/api/highlights/:id',async(request,reply)=>{const result=db.prepare('DELETE FROM highlights WHERE id=?').run((request.params as {id:string}).id);return result.changes?{ok:true}:reply.code(404).send({error:'Highlight not found'});});
-  app.put('/api/documents/:id/progress', async (request,reply)=>{const parsed=z.object({blockId:z.string().nullable(),offsetRatio:z.number().min(0).max(1),lastThreadId:z.string().nullable().optional()}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});db.prepare(`INSERT INTO reading_progress (document_id,block_id,offset_ratio,last_thread_id,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET block_id=excluded.block_id,offset_ratio=excluded.offset_ratio,last_thread_id=COALESCE(excluded.last_thread_id,reading_progress.last_thread_id),updated_at=excluded.updated_at`).run((request.params as {id:string}).id,parsed.data.blockId,parsed.data.offsetRatio,parsed.data.lastThreadId??null,now());return {ok:true};});
+  app.put('/api/documents/:id/progress', async (request,reply)=>{const pdf=saveRepresentationProgress((request.params as{id:string}).id,request.body);if(pdf)return pdf;const parsed=z.object({blockId:z.string().nullable(),offsetRatio:z.number().min(0).max(1),lastThreadId:z.string().nullable().optional()}).safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});db.prepare(`INSERT INTO reading_progress (document_id,block_id,offset_ratio,last_thread_id,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET block_id=excluded.block_id,offset_ratio=excluded.offset_ratio,last_thread_id=COALESCE(excluded.last_thread_id,reading_progress.last_thread_id),updated_at=excluded.updated_at`).run((request.params as {id:string}).id,parsed.data.blockId,parsed.data.offsetRatio,parsed.data.lastThreadId??null,now());return {ok:true};});
 }

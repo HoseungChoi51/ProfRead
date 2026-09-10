@@ -1,4 +1,4 @@
-import type{FastifyInstance}from'fastify';import{documentEditOperationSchema}from'@afterdraft/shared';import{z}from'zod';import{editHistory,restoreEdit,saveEdits}from'../edits/index.js';
+import type{FastifyInstance}from'fastify';import{documentEditOperationSchema}from'@profread/shared';import{z}from'zod';import{editHistory,restoreEdit,saveEdits}from'../edits/index.js';
 const saveSchema=z.object({baseRevision:z.number().int().nonnegative(),operations:z.array(documentEditOperationSchema).min(1).max(200)});
 export function registerEditRoutes(app:FastifyInstance):void{
   app.get('/api/versions/:id/edit-history',async(request,reply)=>{try{return editHistory((request.params as{id:string}).id)}catch(error){return reply.code(404).send({error:(error as Error).message})}});

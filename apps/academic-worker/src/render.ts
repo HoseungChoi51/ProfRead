@@ -9,7 +9,7 @@ import { workerEnvironment } from './process.js';
 
 interface ViewSpec { name: 'desktop' | 'narrow'; width: number; height: number }
 const views: ViewSpec[] = [{ name: 'desktop', width: 1440, height: 1000 }, { name: 'narrow', width: 768, height: 1400 }];
-const renderCss = `*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}html{scroll-behavior:auto!important}body{overflow-wrap:anywhere}img,svg,video,canvas{max-width:100%;height:auto}table{max-width:100%}.afterdraft-qa-label{position:absolute!important;z-index:2147483647!important;padding:1px 4px!important;border:1px solid #7c2d12!important;border-radius:3px!important;background:#fff7ed!important;color:#7c2d12!important;font:600 10px/1.25 ui-monospace,monospace!important;box-shadow:0 1px 2px #0004!important;pointer-events:none!important}`;
+const renderCss = `*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}html{scroll-behavior:auto!important}body{overflow-wrap:anywhere}img,svg,video,canvas{max-width:100%;height:auto}table{max-width:100%}.profread-qa-label{position:absolute!important;z-index:2147483647!important;padding:1px 4px!important;border:1px solid #7c2d12!important;border-radius:3px!important;background:#fff7ed!important;color:#7c2d12!important;font:600 10px/1.25 ui-monospace,monospace!important;box-shadow:0 1px 2px #0004!important;pointer-events:none!important}`;
 
 export interface RenderMetric {
   ref: string; blockId?: string; tag: string; text?: string;
@@ -79,7 +79,7 @@ export async function chromiumPath(): Promise<string | undefined> {
 async function metrics(page: Page): Promise<{ document: Record<string, number | boolean>; objects: RenderMetric[] }> {
   return page.evaluate(() => {
     const candidates = [...new Set([...document.querySelectorAll<HTMLElement>('[data-block-id],figure,table,img,svg,math,video')])];
-    candidates.forEach((element, index) => { element.dataset.afterdraftQaId = `q${index.toString(36)}`; });
+    candidates.forEach((element, index) => { element.dataset.profreadQaId = `q${index.toString(36)}`; });
     const excerpt = (value: string | null | undefined, limit = 240) => {
       const full = value?.replace(/\s+/g, ' ').trim() ?? '';
       if (!full) return {};
@@ -91,7 +91,7 @@ async function metrics(page: Page): Promise<{ document: Record<string, number | 
       const ref = `q${index.toString(36)}`;
       const rect = element.getBoundingClientRect(), style = getComputedStyle(element), visible = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
       const tag = element.tagName.toLowerCase(), root = element.closest<HTMLElement>('figure,table') ?? element;
-      const rootRef = root.dataset.afterdraftQaId ?? ref;
+      const rootRef = root.dataset.profreadQaId ?? ref;
       let structure: Record<string, unknown> | undefined;
       if (tag === 'table') {
         const rows = [...element.querySelectorAll('tr')], cells = [...element.querySelectorAll('th,td')];
@@ -151,7 +151,7 @@ async function captureContext(page: Page, path: string, requestedY: number): Pro
 
 export async function renderHtml(body: Buffer, options: { maxObjects?: number; signal?: AbortSignal } = {}): Promise<OperationResult> {
   const executablePath = await chromiumPath(); if (!executablePath) throw new WorkerError('tool_unavailable', 'Chromium is unavailable.', 503);
-  const root = await mkdtemp(join(tmpdir(), 'afterdraft-render-')), bundle = join(root, 'bundle'), renderDirectory = join(bundle, 'renders'); await mkdir(renderDirectory, { recursive: true });
+  const root = await mkdtemp(join(tmpdir(), 'profread-render-')), bundle = join(root, 'bundle'), renderDirectory = join(bundle, 'renders'); await mkdir(renderDirectory, { recursive: true });
   let browser: Browser | undefined;
   try {
     browser = await chromium.launch({ executablePath, headless: true, env: workerEnvironment(root), args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-background-networking', '--disable-component-update', '--disable-sync'], timeout: 30_000 });
@@ -165,12 +165,12 @@ export async function renderHtml(body: Buffer, options: { maxObjects?: number; s
       await page.setContent(`<style>${renderCss}</style>${html}`, { waitUntil: 'load', timeout: 30_000 });
       await page.evaluate(async () => { await Promise.all([...document.images].map(image => image.complete ? Promise.resolve() : new Promise<void>(resolve => { image.addEventListener('load', () => resolve(), { once: true }); image.addEventListener('error', () => resolve(), { once: true }); }))); });
       const measured = await metrics(page), maximum = Math.max(0, Math.min(200, options.maxObjects ?? 120)), selectedObjects = selectScreenshotMetrics(measured.objects, maximum), contextObjects = selectScreenshotMetrics(measured.objects.filter(item => item.tag !== 'math'), Math.min(40, maximum)), contextRefs = new Set(contextObjects.map(item => item.ref)), selectedRefs = selectedObjects.map(item => item.ref);
-      await page.evaluate(refs => { for (const ref of refs) { const element = document.querySelector<HTMLElement>(`[data-afterdraft-qa-id="${CSS.escape(ref)}"]`); if (!element) continue; const rect = element.getBoundingClientRect(), label = document.createElement('span'); label.className = 'afterdraft-qa-label'; label.textContent = element.dataset.afterdraftQaId ?? ''; label.style.left = `${Math.max(0, rect.left + scrollX)}px`; label.style.top = `${Math.max(0, rect.top + scrollY - 13)}px`; document.body.append(label); } }, selectedRefs);
+      await page.evaluate(refs => { for (const ref of refs) { const element = document.querySelector<HTMLElement>(`[data-profread-qa-id="${CSS.escape(ref)}"]`); if (!element) continue; const rect = element.getBoundingClientRect(), label = document.createElement('span'); label.className = 'profread-qa-label'; label.textContent = element.dataset.profreadQaId ?? ''; label.style.left = `${Math.max(0, rect.left + scrollX)}px`; label.style.top = `${Math.max(0, rect.top + scrollY - 13)}px`; document.body.append(label); } }, selectedRefs);
       const screenshots = await captureOverview(page, renderDirectory, view, Number(measured.document.scrollHeight));
       const objectDirectory = join(bundle, 'objects', view.name), contextDirectory = join(bundle, 'contexts', view.name); await Promise.all([mkdir(objectDirectory, { recursive: true }), mkdir(contextDirectory, { recursive: true })]); const objectScreenshots: Array<{ ref: string; path: string }> = [], contextScreenshots: Array<{ ref: string; path: string; clip: { x: number; y: number; width: number; height: number } }> = [];
       for (const object of selectedObjects) {
         if (object.rect.height > 16_000 || object.rect.width > 16_000) { warnings.push({ code: 'object_screenshot_skipped', view: view.name, ref: object.ref, reason: 'oversized' }); continue; }
-        const name = `${object.ref}.png`; try { await page.locator(`[data-afterdraft-qa-id="${object.ref}"]`).screenshot({ path: join(objectDirectory, name), animations: 'disabled' }); objectScreenshots.push({ ref: object.ref, path: `objects/${view.name}/${name}` }); } catch { warnings.push({ code: 'object_screenshot_failed', view: view.name, ref: object.ref }); }
+        const name = `${object.ref}.png`; try { await page.locator(`[data-profread-qa-id="${object.ref}"]`).screenshot({ path: join(objectDirectory, name), animations: 'disabled' }); objectScreenshots.push({ ref: object.ref, path: `objects/${view.name}/${name}` }); } catch { warnings.push({ code: 'object_screenshot_failed', view: view.name, ref: object.ref }); }
         if (contextRefs.has(object.ref)) {
           const requested = contextClip(object, view, Number(measured.document.scrollHeight)), path = join(contextDirectory, name), clip = await captureContext(page, path, requested.y);
           if (clip) contextScreenshots.push({ ref: object.ref, path: `contexts/${view.name}/${name}`, clip });
@@ -186,6 +186,6 @@ export async function renderHtml(body: Buffer, options: { maxObjects?: number; s
     const manifest: Record<string, unknown> = { schemaVersion: 1, operation: 'render', inputContract: 'HTML must be self-contained; use data URLs for images and fonts. Relative, file, and network resources are blocked.', source: { kind: 'html', bytes: body.byteLength, sha256: sha256Bytes(body) }, renderer: { name: 'playwright-chromium', externalRequests: 'blocked', pageScripts: 'disabled', qaLabels: 'reading-view screenshots label measured objects with their q-ref' }, views: viewResults, warnings };
     manifest.files = await bundleFiles(bundle); await writeJson(join(bundle, 'manifest.json'), manifest); const archive = join(root, 'result.zip'); await createZip(bundle, archive, options.signal);
     await assertFileWithinWorkerOutputLimit(archive, 'Rendered HTML bundle exceeds the worker response limit.');
-    return { root, archivePath: archive, downloadName: 'afterdraft-render-bundle.zip' };
+    return { root, archivePath: archive, downloadName: 'profread-render-bundle.zip' };
   } catch (error) { await browser?.close().catch(() => {}); await rm(root, { recursive: true, force: true }); throw error; }
 }

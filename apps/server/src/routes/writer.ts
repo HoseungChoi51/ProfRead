@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { writerProposalChangeSchema, writerSourceRefSchema, type WriterSourceRef } from '@afterdraft/shared';
+import { writerProposalChangeSchema, writerSourceRefSchema, type WriterSourceRef } from '@profread/shared';
 import { db, now, row, rows } from '../db/index.js';
 import { saveWriterEdits } from '../edits/index.js';
 import { currentWriterBasis, writerProposals } from '../models/writer-context.js';

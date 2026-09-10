@@ -7,7 +7,7 @@ COPY apps/web/package.json apps/web/tsconfig.json apps/web/tsconfig.app.json ./a
 COPY apps/academic-worker/package.json apps/academic-worker/tsconfig.json ./apps/academic-worker/
 RUN npm ci
 COPY apps/academic-worker/src ./apps/academic-worker/src
-RUN npm run build -w @afterdraft/academic-worker
+RUN npm run build -w @profread/academic-worker
 RUN npm prune --omit=dev
 
 FROM node:24-bookworm-slim AS runtime
@@ -17,14 +17,15 @@ ENV NODE_ENV=production \
     ACADEMIC_WORKER_MAX_BODY_BYTES=104857600 \
     ACADEMIC_WORKER_MAX_OUTPUT_BYTES=230686720 \
     CHROMIUM_PATH=/usr/bin/chromium \
-    AFTERDRAFT_WORKER_HOME=/tmp/afterdraft-worker-home \
-    XDG_CACHE_HOME=/tmp/afterdraft-worker-cache \
-    XDG_CONFIG_HOME=/tmp/afterdraft-worker-config \
+    PROFREAD_WORKER_HOME=/tmp/profread-worker-home \
+    XDG_CACHE_HOME=/tmp/profread-worker-cache \
+    XDG_CONFIG_HOME=/tmp/profread-worker-config \
     SAL_USE_VCLPLUGIN=svp
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates chromium fonts-dejavu-core fonts-liberation2 fonts-noto-cjk fonts-noto-core \
       latexml libreoffice-math libreoffice-writer pandoc poppler-utils zip \
+      tesseract-ocr tesseract-ocr-eng tesseract-ocr-kor \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./

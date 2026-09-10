@@ -35,7 +35,7 @@ async function pngDimensions(path: string): Promise<{ width: number; height: num
 
 export async function renderPdf(body: Buffer, options: { filename?: string; pages?: number; signal?: AbortSignal } = {}): Promise<OperationResult> {
   if (!hasPdfHeader(body)) throw new WorkerError('invalid_pdf', 'The source does not start with a PDF header.', 422);
-  const root = await mkdtemp(join(tmpdir(), 'afterdraft-pdf-')), input = join(root, 'source.pdf'), bundle = join(root, 'bundle'), reference = join(bundle, 'reference');
+  const root = await mkdtemp(join(tmpdir(), 'profread-pdf-')), input = join(root, 'source.pdf'), bundle = join(root, 'bundle'), reference = join(bundle, 'reference');
   await mkdir(reference, { recursive: true }); await writeFile(input, body, { mode: 0o600 });
   try {
     const limit = pdfPageLimit(options.pages), attempts: Attempt[] = [];
@@ -57,6 +57,6 @@ export async function renderPdf(body: Buffer, options: { filename?: string; page
     manifest.files = await bundleFiles(bundle); await writeJson(join(bundle, 'manifest.json'), manifest);
     const archivePath = join(root, 'result.zip'); await createZip(bundle, archivePath, options.signal);
     await assertFileWithinWorkerOutputLimit(archivePath, 'Rendered PDF bundle exceeds the worker response limit.');
-    return { root, archivePath, downloadName: 'afterdraft-pdf-reference.zip' };
+    return { root, archivePath, downloadName: 'profread-pdf-reference.zip' };
   } catch (error) { await rm(root, { recursive: true, force: true }); throw error; }
 }

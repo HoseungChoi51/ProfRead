@@ -1,4 +1,4 @@
-import type { TaskAction } from '@afterdraft/shared';
+import type { TaskAction } from '@profread/shared';
 import { db, now, row, rows } from '../db/index.js';
 import { invalidateContextCaches } from './behavior.js';
 

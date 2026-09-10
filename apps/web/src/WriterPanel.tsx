@@ -3,7 +3,7 @@ import type {
   WriterProposalChange,
   WriterProposalResult,
   WriterSourceType,
-} from "@afterdraft/shared";
+} from "@profread/shared";
 
 export type WriterMessage = {
   id: string;

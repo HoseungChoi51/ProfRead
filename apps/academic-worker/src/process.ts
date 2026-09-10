@@ -23,19 +23,20 @@ export interface CommandOptions {
 }
 
 export function workerEnvironment(cwd: string): NodeJS.ProcessEnv {
-  const home = process.env.AFTERDRAFT_WORKER_HOME ?? '/tmp/afterdraft-worker-home';
-  const cache = '/tmp/afterdraft-worker-cache';
-  const config = '/tmp/afterdraft-worker-config';
-  for (const directory of [home, cache, config]) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const workerHome = process.env.PROFREAD_WORKER_HOME ?? process.env.AFTERDRAFT_WORKER_HOME ?? '/tmp/profread-worker-home';
+  const cache = '/tmp/profread-worker-cache';
+  const config = '/tmp/profread-worker-config';
+  for (const directory of [workerHome, cache, config]) mkdirSync(directory, { recursive: true, mode: 0o700 });
   return {
     PATH: process.env.PATH ?? '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
     LC_ALL: process.env.LC_ALL ?? 'C.UTF-8',
-    HOME: home,
+    HOME: workerHome,
     TMPDIR: process.env.TMPDIR ?? '/tmp',
     XDG_CACHE_HOME: cache,
     XDG_CONFIG_HOME: config,
     SAL_USE_VCLPLUGIN: 'svp',
+    OMP_THREAD_LIMIT: '2',
     PWD: cwd,
     NO_PROXY: '*',
     no_proxy: '*',

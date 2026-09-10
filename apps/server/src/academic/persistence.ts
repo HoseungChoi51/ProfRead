@@ -54,6 +54,12 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
     if(repairPlan.operations.length)parsed=await applyAcceptedAcademicReview(jobId,parsed.html,parsed.title)
     await mkdir(join(directory,'assets'),{recursive:true});const htmlPath=join(directory,'document.html'),sourceExtension=job.source_kind==='url'?'.url':extname(job.source_name).toLowerCase()||`.${job.source_kind}`,sourcePath=join(directory,`source${sourceExtension.replace(/[^.a-z0-9-]/g,'')||'.bin'}`);
     await copyFile(job.source_path,sourcePath);await chmod(sourcePath,0o444);await writeFile(htmlPath,parsed.html,{flag:'wx',mode:0o444});
+    const retainedSource=(staged.manifest.source??{}) as Record<string,unknown>,originalPdf=retainedSource.originalPdfPath,originalPdfHash=retainedSource.originalPdfHash;
+    if(typeof originalPdf==='string'&&typeof originalPdfHash==='string'){
+      const retained=resolve(staged.bundleDirectory,originalPdf);if(!inside(staged.bundleDirectory,retained))throw new Error('Original PDF path is outside its import bundle');
+      const bytes=await readFile(retained);if(bytes.subarray(0,5).toString()!=='%PDF-'||createHash('sha256').update(bytes).digest('hex')!==originalPdfHash)throw new Error('Original PDF failed integrity validation');
+      await writeFile(join(directory,'source.pdf'),bytes,{flag:'wx',mode:0o444});
+    }
     for(const asset of staged.assets){const id=assetIds.get(asset.sourcePath)!;await writeFile(join(directory,'assets',id),files.get(asset.sourcePath)!,{flag:'wx',mode:0o444})}
     await chmod(directory,0o555);await chmod(join(directory,'assets'),0o555);
     const timestamp=now();db.exec('BEGIN IMMEDIATE');transaction=true;
@@ -67,7 +73,7 @@ export async function publishAcademicImport(jobId:string):Promise<PublishResult>
     if(job.target_document_id){
       const previous=row<{id:string}>('SELECT id FROM document_versions WHERE document_id=? AND id<>? ORDER BY version DESC LIMIT 1',documentId,versionId);
       if(previous){
-        const anchors=db.prepare('SELECT a.*,b.start_offset old_block_start FROM anchors a LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id WHERE a.document_version_id=?').all(previous.id) as any[],sourceCandidates=db.prepare('SELECT id AS blockId,text_content AS text,start_offset AS start,end_offset AS end FROM blocks WHERE document_version_id=? ORDER BY ordinal').all(previous.id) as Array<{blockId:string;text:string;start:number;end:number}>;
+        const anchors=db.prepare('SELECT a.*,b.start_offset old_block_start FROM anchors a LEFT JOIN blocks b ON b.document_version_id=a.document_version_id AND b.id=a.block_id WHERE a.document_version_id=? AND a.selector_json IS NULL').all(previous.id) as any[],sourceCandidates=db.prepare('SELECT id AS blockId,text_content AS text,start_offset AS start,end_offset AS end FROM blocks WHERE document_version_id=? ORDER BY ordinal').all(previous.id) as Array<{blockId:string;text:string;start:number;end:number}>;
         for(const anchor of anchors){
           const localStartOffset=Number.isInteger(anchor.old_block_start)?anchor.start_offset-anchor.old_block_start:undefined,sourceContextOccurrenceCount=countExactContextOccurrences({exact:anchor.exact_quote,prefix:anchor.prefix_text,suffix:anchor.suffix_text},sourceCandidates),proposed=reattach({exact:anchor.exact_quote,prefix:anchor.prefix_text,suffix:anchor.suffix_text,startOffset:anchor.start_offset,localStartOffset,blockId:anchor.block_id,sourceContextOccurrenceCount},parsed.blocks.map(block=>({blockId:block.id,text:block.text,start:block.start,end:block.end})));
           let match=anchor.status==='attached'?proposed:{...proposed,status:'unmatched' as const};const matched=parsed.blocks.find(block=>block.id===match.blockId);let context:AnchorContextWindow|undefined;

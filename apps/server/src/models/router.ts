@@ -1,4 +1,4 @@
-import type { ModelDefinition, ModelProfile, TaskAction } from '@afterdraft/shared';
+import type { ModelDefinition, ModelProfile, TaskAction } from '@profread/shared';
 
 export type Action = TaskAction;
 export interface RouteInput { action: Action; input: string; hasVisual: boolean; webEnabled: boolean; estimatedTokens: number; requiresImageGeneration?: boolean; modelOverride?: string; taskModelId?: string }

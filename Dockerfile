@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json eslint.config.js ./
 COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
 COPY apps/server/package.json apps/server/tsconfig.json ./apps/server/
-COPY apps/web/package.json apps/web/tsconfig.json apps/web/tsconfig.app.json apps/web/vite.config.ts apps/web/index.html ./apps/web/
+COPY apps/web/package.json apps/web/tsconfig.json apps/web/tsconfig.app.json apps/web/vite.config.ts apps/web/pdfjs-assets.ts apps/web/index.html ./apps/web/
 COPY apps/academic-worker/package.json apps/academic-worker/tsconfig.json ./apps/academic-worker/
 RUN npm ci
 COPY packages/shared/src ./packages/shared/src
@@ -15,7 +15,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 FROM node:24-alpine AS runtime
-ENV NODE_ENV=production AFTERDRAFT_DATA_DIR=/data AFTERDRAFT_WEB_DIR=/app/apps/web/dist AFTERDRAFT_PORT=4310
+ENV NODE_ENV=production PROFREAD_DATA_DIR=/data PROFREAD_WEB_DIR=/app/apps/web/dist PROFREAD_PORT=4310
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/

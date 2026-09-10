@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 readonly APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly ENV_FILE="${AFTERDRAFT_ENV_FILE:-/srv/homelab/secrets/afterdraft.env}"
-readonly HEALTH_URL="${AFTERDRAFT_HEALTH_URL:-http://127.0.0.1:4310/health}"
+readonly ENV_FILE="${PROFREAD_ENV_FILE:-/srv/homelab/secrets/profread.env}"
+readonly HEALTH_URL="${PROFREAD_HEALTH_URL:-http://127.0.0.1:4310/health}"
 
 usage() {
   cat <<'EOF'
@@ -14,8 +14,8 @@ waits for the local health endpoint. Use --check to validate the deployment
 configuration without changing the running service.
 
 Optional environment variables:
-  AFTERDRAFT_ENV_FILE    Compose env file
-  AFTERDRAFT_HEALTH_URL  Health endpoint to wait for
+  PROFREAD_ENV_FILE    Compose env file
+  PROFREAD_HEALTH_URL  Health endpoint to wait for
 EOF
 }
 
@@ -40,16 +40,16 @@ if [[ "${CHECK_ONLY}" == 1 ]]; then
 fi
 
 echo "Building ProfRead from ${APP_DIR} ..."
-docker compose --env-file "${ENV_FILE}" build afterdraft
+docker compose --env-file "${ENV_FILE}" build profread
 
 echo "Recreating the ProfRead container ..."
-docker compose --env-file "${ENV_FILE}" up -d --force-recreate afterdraft
+docker compose --env-file "${ENV_FILE}" up -d --force-recreate profread
 
 echo "Waiting for ${HEALTH_URL} ..."
 for attempt in $(seq 1 30); do
   if response="$(curl --fail --silent --show-error "${HEALTH_URL}" 2>/dev/null)" \
     && [[ "${response}" == *'"status":"ok"'* ]]; then
-    container_id="$(docker compose --env-file "${ENV_FILE}" ps -q afterdraft)"
+    container_id="$(docker compose --env-file "${ENV_FILE}" ps -q profread)"
     image_id="$(docker inspect --format '{{.Image}}' "${container_id}")"
     echo "ProfRead is healthy. Image: ${image_id:7:12}"
     exit 0
@@ -58,5 +58,5 @@ for attempt in $(seq 1 30); do
 done
 
 echo "ProfRead did not become healthy; recent logs follow:" >&2
-docker compose --env-file "${ENV_FILE}" logs --tail=80 afterdraft >&2
+docker compose --env-file "${ENV_FILE}" logs --tail=80 profread >&2
 exit 1

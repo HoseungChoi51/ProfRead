@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { academicReviewerPolicyActionSchema, type AcademicReviewerPolicyAction } from '@afterdraft/shared';
+import { academicReviewerPolicyActionSchema, type AcademicReviewerPolicyAction } from '@profread/shared';
 import { db, now, row, rows } from '../db/index.js';
 import { normalizePublishedLocator } from './published-utils.js';
 

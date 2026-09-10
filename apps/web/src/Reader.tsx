@@ -6,12 +6,13 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AnchorSelector, DocumentEditOperation } from "@afterdraft/shared";
+import type { AnchorSelector, DocumentEditOperation, DocumentRepresentation, SourceCitation, SourceSelector } from "@profread/shared";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { api, stream } from "./api.js";
+import {PdfReader, isPdfSelector, type PdfMarker, type PdfProgress, type PdfReaderHandle, type PdfSelection, type PdfSelector} from './PdfReader.js';
 import {
   WriterPanel,
   type WriterSource,
@@ -25,6 +26,11 @@ type DocumentInfo = {
   block_id: string | null;
   offset_ratio: number | null;
   last_thread_id: string | null;
+  representations?: DocumentRepresentation[];
+  preferredRepresentationId?: string | null;
+  pdfSourceAvailable?: boolean;
+  pdfJobId?: string | null;
+  pdfJobStatus?: string | null;
 };
 type Message = {
   id: string;
@@ -32,9 +38,11 @@ type Message = {
   content: string;
   parentMessageId?: string;
   createdAt: string;
+  sourceCitations?: SourceCitation[];
 };
 type Thread = {
   id: string;
+  representation_id?: string | null;
   document_id: string;
   anchor_id?: string;
   parent_message_id?: string;
@@ -49,6 +57,8 @@ type Thread = {
   local_end_offset?: number;
   action?: string;
   kind?: "discussion" | "writer";
+  selector?: SourceSelector | null;
+  representation?: "html" | "pdf";
   annotation_text?: string | null;
   annotation_candidate_text?: string | null;
   annotation_candidate_source_message_id?: string | null;
@@ -71,11 +81,15 @@ type Highlight = {
   kind: HighlightKind;
   color: string;
   note: string | null;
+  selector?: SourceSelector | null;
+  representation?: "html" | "pdf";
 };
 type Model = { id: string; label: string; providerId: string; ready?: boolean };
 type TaskRoute = { action: string; modelId: string };
 type Artifact = {
   id: string;
+  representation_id?: string | null;
+  basis_extraction_revision?: number | null;
   kind: string;
   version: number;
   content: any;
@@ -125,6 +139,8 @@ export type SidebarSource = {
   status?: "attached" | "unmatched";
   local_start_offset?: number | null;
   local_end_offset?: number | null;
+  selector?: SourceSelector | null;
+  representation?: "html" | "pdf";
 };
 export type SidebarSourceNavigationPayload = {
   type: "reveal-selection";
@@ -177,7 +193,28 @@ type RunResult = { completed: boolean; requestId: string };
 type Selection = AnchorSelector & {
   rect: { top: number; left: number; width: number; height: number };
   visual?: { mimeType: "image/png"; data: string };
+  pdfSelector?: PdfSelector;
 };
+export function pdfSelectionForReader(selection: PdfSelection): Selection {
+  const {selector, rect} = selection, first = selector.segments[0]!;
+  return {blockId: `pdf:${selector.representationId}:${first.page}:${first.quads[0]?.join(',')}`, blockType: selector.kind === 'pdf-region' ? 'image' : 'text', exact: selector.exact, prefix: '', suffix: '', startOffset: first.startOffset ?? 0, endOffset: first.endOffset ?? 0, rect, pdfSelector: selector};
+}
+export function sourceRepresentationLabel(source: SidebarSource): string {
+  return isPdfSelector(source.selector) ? 'PDF' : 'HTML';
+}
+export function matchesReadingSource(sourceId: string | null | undefined, activeId: string | null, pdf: boolean): boolean {
+  return pdf ? sourceId === activeId : !sourceId || sourceId === activeId || sourceId.startsWith('html-');
+}
+export function sourceDocumentVersion(document: Pick<DocumentInfo, 'version_id' | 'representations'>, sourceId: string | null | undefined): string {
+  return document.representations?.find(source => source.id === sourceId)?.documentVersionId ?? document.version_id;
+}
+function migratedReaderStorage(storage: Storage, key: string, legacyKey: string): string | null {
+  const current = storage.getItem(key);
+  if (current !== null) return current;
+  const legacy = storage.getItem(legacyKey);
+  if (legacy !== null) storage.setItem(key, legacy);
+  return legacy;
+}
 export type SelectionRect = {
   top: number;
   left: number;
@@ -457,6 +494,8 @@ export function summaryReviewRequestIdentity(input: {
   artifactVersion: number;
   documentVersionId: string;
   revision: number;
+  representationId?: string;
+  extractionRevision?: number;
   modelOverride: string;
   signals: Array<{
     id: string;
@@ -470,6 +509,8 @@ export function summaryReviewRequestIdentity(input: {
     input.artifactVersion,
     input.documentVersionId,
     input.revision,
+    input.representationId ?? null,
+    input.extractionRevision ?? null,
     input.signals
       .filter(
         (signal) =>
@@ -690,6 +731,10 @@ export function Reader({
   onBack: () => void;
 }) {
   const [doc, setDoc] = useState<DocumentInfo | null>(null),
+    [representationId, setRepresentationId] = useState<string | null>(null),
+    [pdfPreparing, setPdfPreparing] = useState(false),
+    [pdfEnableOpen, setPdfEnableOpen] = useState(false),
+    [pdfOcrLanguage, setPdfOcrLanguage] = useState<'eng' | 'eng+kor'>('eng'),
     [threads, setThreads] = useState<Thread[]>([]),
     [highlights, setHighlights] = useState<Highlight[]>([]),
     [artifacts, setArtifacts] = useState<Artifact[]>([]),
@@ -704,7 +749,7 @@ export function Reader({
     [taskRoutes, setTaskRoutes] = useState<TaskRoute[]>([]),
     [modelOverride, setModelOverride] = useState(""),
     [repairId, setRepairId] = useState(
-      () => sessionStorage.getItem("afterdraft-repair-id") ?? "",
+      () => migratedReaderStorage(sessionStorage, "profread-repair-id", "afterdraft-repair-id") ?? "",
     ),
     [selection, setSelection] = useState<Selection | null>(null),
     [selectionPanel, setSelectionPanel] = useState<
@@ -741,11 +786,15 @@ export function Reader({
     [savingEdits, setSavingEdits] = useState(false),
     [contentEpoch, setContentEpoch] = useState(0),
     [sidebarWidth, setSidebarWidth] = useState(() => {
-      const stored = Number(localStorage.getItem("afterdraft-sidebar-width"));
+      const stored = Number(migratedReaderStorage(localStorage, "profread-sidebar-width", "afterdraft-sidebar-width"));
       return clampSidebar(Number.isFinite(stored) && stored ? stored : 640);
     });
   const paper = useRef<HTMLElement>(null),
     iframe = useRef<HTMLIFrameElement>(null),
+    pdfReader = useRef<PdfReaderHandle>(null),
+    pdfProgress = useRef<PdfProgress | null>(null),
+    currentRepresentationId = useRef<string | null>(null),
+    pendingSourceNavigation = useRef<SidebarSource | PdfSelector | null>(null),
     toolbar = useRef<HTMLDivElement>(null),
     questionInput = useRef<HTMLInputElement>(null),
     highlightKindSelect = useRef<HTMLSelectElement>(null),
@@ -764,6 +813,33 @@ export function Reader({
     popoverSidebarWidth = useRef(sidebarWidth),
     pendingEditsRef = useRef<DocumentEditOperation[]>([]),
     editFinishResolvers = useRef(new Map<string, () => void>());
+  const activeRepresentation = doc?.representations?.find(item => item.id === representationId);
+  currentRepresentationId.current = representationId;
+  const pdfView = activeRepresentation?.kind === 'pdf';
+  const htmlRepresentation = doc?.representations?.find(item => item.kind === 'html');
+  const pdfRepresentation = doc?.representations?.find(item => item.kind === 'pdf');
+  const pdfMarkers = useMemo<PdfMarker[]>(() => [
+    ...threads.filter(thread => thread.anchor_id && !thread.parent_message_id && isPdfSelector(thread.selector)).map(thread => ({id: thread.anchor_id!, selector: thread.selector as PdfSelector, label: deriveThreadPreview(thread, artifacts)?.text || thread.title || '', note: thread.annotation_text ?? null, status: thread.status ?? 'attached'})),
+    ...highlights.filter(highlight => isPdfSelector(highlight.selector)).map(highlight => ({id: highlight.anchor_id, selector: highlight.selector as PdfSelector, kind: highlight.kind, note: highlight.note, status: highlight.status ?? 'attached'})),
+  ], [threads, highlights, artifacts]);
+  useEffect(() => {
+    if (!pdfPreparing && !doc?.pdfJobId && !['preparing', 'indexing'].includes(pdfRepresentation?.status ?? '')) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const info = await api<DocumentInfo>(`/api/documents/${documentId}`);
+        if (stopped) return;
+        setDoc(info);
+        const next = info.representations?.find(item => item.kind === 'pdf');
+        if (pdfPreparing && next && ['indexing', 'ready', 'partial'].includes(next.status)) {
+          setRepresentationId(next.id); setPdfPreparing(false);
+        }
+        if (next?.status === 'failed' || info.pdfJobStatus === 'failed') {setPdfPreparing(false); setError(next?.error || 'The PDF could not be prepared. You can retry from the original source.');}
+      } catch (error) {if (!stopped) setError((error as Error).message);}
+    };
+    const timer = setInterval(() => void poll(), 2500);
+    return () => {stopped = true; clearInterval(timer);};
+  }, [documentId, pdfPreparing, doc?.pdfJobId, pdfRepresentation?.status]);
   const loadThreads = useCallback(
     () =>
       api<any[]>(`/api/documents/${documentId}/threads`).then((data) =>
@@ -811,6 +887,7 @@ export function Reader({
           (thread) =>
             thread.kind !== "writer" &&
             thread.anchor_id &&
+            !isPdfSelector(thread.selector) &&
             !thread.parent_message_id,
         )
         .map((thread) => {
@@ -832,7 +909,7 @@ export function Reader({
             localEndOffset: thread.local_end_offset,
           };
         }),
-      ...highlights.map((highlight) => ({
+      ...highlights.filter(highlight => !isPdfSelector(highlight.selector)).map((highlight) => ({
         id: highlight.anchor_id,
         blockId: highlight.block_id,
         exact: highlight.exact_quote,
@@ -869,10 +946,13 @@ export function Reader({
     reviewRetries.current.clear();
   }, [documentId]);
   useEffect(() => {
+    setRepresentationId(null);
+    pdfProgress.current = null;
     api<DocumentInfo>(`/api/documents/${documentId}`)
       .then((info) => {
         setDoc(info);
-        void loadEditHistory(info.version_id);
+        setRepresentationId(info.preferredRepresentationId ?? info.representations?.find(item => item.kind === 'html')?.id ?? info.representations?.[0]?.id ?? null);
+        if (!info.representations || info.representations.some(item => item.kind === 'html')) void loadEditHistory(info.version_id);
         if (info.last_thread_id) {
           setDrawer(true);
         }
@@ -898,7 +978,7 @@ export function Reader({
     const receive = (event: MessageEvent) => {
       if (
         event.source !== iframe.current?.contentWindow ||
-        event.data?.source !== "afterdraft"
+        !['profread', 'afterdraft'].includes(event.data?.source)
       )
         return;
       if (event.data.type === "open-external-link") {
@@ -1107,6 +1187,12 @@ export function Reader({
           { type: "restore-progress", ratio: doc?.offset_ratio ?? 0 },
           "*",
         );
+        const pending = pendingSourceNavigation.current;
+        if (pending && !isPdfSelector(pending)) {
+          const payload = sidebarSourceNavigationPayload(pending);
+          if (payload) iframe.current?.contentWindow?.postMessage(payload, '*');
+          pendingSourceNavigation.current = null;
+        }
       }
       if (event.data.type === "anchor-click") {
         setDrawer(true);
@@ -1133,7 +1219,7 @@ export function Reader({
     return () => removeEventListener("message", receive);
   }, [threads, highlights, anchorPayloads, doc?.offset_ratio, editMode, selection, moveDraft]);
   useEffect(() => {
-    localStorage.setItem("afterdraft-sidebar-width", String(sidebarWidth));
+    localStorage.setItem("profread-sidebar-width", String(sidebarWidth));
   }, [sidebarWidth]);
   useEffect(() => {
     const fit = () => setSidebarWidth((current) => clampSidebar(current));
@@ -1142,7 +1228,7 @@ export function Reader({
       if (
         target instanceof Element &&
         target.closest(
-          ".selection-tools,.selection-composer,.edit-context-menu,.summary-menu,.edit-dialog",
+          ".selection-tools,.selection-composer,.edit-context-menu,.summary-menu,.edit-dialog,.pdf-toolbar,.pdf-marker-buttons",
         )
       )
         return;
@@ -1212,7 +1298,7 @@ export function Reader({
         return;
       }
       const element = toolbar.current;
-      const paneElement = iframe.current;
+      const paneElement = pdfView ? paper.current?.querySelector<HTMLElement>('.pdf-viewport') : iframe.current;
       const paperElement = paper.current;
       if (!element || !paneElement || !paperElement) return;
       const paneRect = paneElement.getBoundingClientRect();
@@ -1265,7 +1351,7 @@ export function Reader({
           : next;
       });
     },
-    [selection, selectionPanel],
+    [selection, selectionPanel, pdfView],
   );
   useLayoutEffect(() => {
     if (!selection || selectionPanel !== "actions") return;
@@ -1277,6 +1363,7 @@ export function Reader({
         { type: "refresh-selection" },
         "*",
       );
+      pdfReader.current?.refreshSelection();
       updatePopoverPosition("observer");
     };
     const refreshFromWindow = () => {
@@ -1284,6 +1371,7 @@ export function Reader({
         { type: "refresh-selection" },
         "*",
       );
+      pdfReader.current?.refreshSelection();
       updatePopoverPosition("external");
     };
     const observer =
@@ -1325,17 +1413,17 @@ export function Reader({
       api(`/api/documents/${documentId}/progress`, {
         method: "PUT",
         body: JSON.stringify({
-          blockId: null,
-          offsetRatio: Math.min(1, scrollRatio.current),
+          ...(pdfView && representationId ? {representationId, ...(pdfProgress.current ?? {})} : {...(representationId ? {representationId} : {}), blockId: null, offsetRatio: Math.min(1, scrollRatio.current)}),
         }),
       }).catch(() => {});
     const id = setInterval(save, 10000);
     return () => {
       clearInterval(id);
-      save();
+      if (currentRepresentationId.current === representationId) save();
     };
-  }, [documentId]);
+  }, [documentId, pdfView, representationId]);
   function closeSelectionPanel() {
+    pdfReader.current?.clearSelection();
     iframe.current?.contentWindow?.postMessage(
       { type: "clear-stored-selection" },
       "*",
@@ -1358,6 +1446,7 @@ export function Reader({
   }
   function revealStoredSelection() {
     if (!selection) return;
+    if (selection.pdfSelector) {pdfReader.current?.reveal(selection.pdfSelector); return;}
     iframe.current?.contentWindow?.postMessage(
       {
         type: "reveal-selection",
@@ -1389,8 +1478,8 @@ export function Reader({
     return api<{ id: string }>("/api/anchors", {
       method: "POST",
       body: JSON.stringify({
-        documentVersionId: doc.version_id,
-        selector: {
+        documentVersionId: sourceDocumentVersion(doc, selection.pdfSelector?.representationId ?? representationId),
+        selector: selection.pdfSelector ?? {
           blockId: selection.blockId,
           exact: selection.exact,
           prefix: selection.prefix,
@@ -1415,7 +1504,7 @@ export function Reader({
     }
   }
   async function createHighlight() {
-    if (!selection?.exact || !doc || running) return;
+    if (!selection || (!selection.exact && !selection.pdfSelector) || !doc || running) return;
     const note = highlightNote.trim();
     if (highlightKind === "comment" && !note) {
       setError("Add a comment before saving this highlight");
@@ -1566,6 +1655,9 @@ export function Reader({
     artifactScopeId?: string,
     requestId: string = crypto.randomUUID(),
   ): Promise<RunResult> {
+    const sourceThread = threads.find(thread => thread.id === threadId);
+    const runRepresentationId = sourceThread?.representation_id ?? (isPdfSelector(sourceThread?.selector) ? sourceThread.selector.representationId : representationId);
+    const runPdf = doc?.representations?.find(source => source.id === runRepresentationId)?.kind === 'pdf';
     const controller = new AbortController();
     aborter.current = controller;
     setActiveRunReady(false);
@@ -1581,7 +1673,8 @@ export function Reader({
         "/api/runs",
         {
           requestId,
-          documentVersionId: doc!.version_id,
+          documentVersionId: sourceDocumentVersion(doc!, runRepresentationId),
+          ...(runRepresentationId ? {representationId: runRepresentationId} : {}),
           threadId,
           anchorId,
           action,
@@ -1607,6 +1700,10 @@ export function Reader({
             setRouteInfo(`${data.modelId} · generating visual recap image…`);
           if (event === "image_generated")
             setRouteInfo(`${data.modelId} · visual recap image ready`);
+          if (event === "source_context")
+            setRouteInfo(current => `${current} · PDF source${data.coverage?.includedPages ? ` ${data.coverage.includedPages.length}/${data.coverage.totalPages} context pages` : ''}${data.coverage?.partial ? ' · partial text index' : ''}${data.imagesOmitted?.length ? ` · ${data.imagesOmitted.length} page images omitted` : ''}`);
+          if (event === "source_citations")
+            setThreads(current => current.map(thread => thread.id === threadId ? {...thread, messages: thread.messages.map(message => message.id === 'draft' ? {...message, sourceCitations: data.citations} : message)} : thread));
           if (event === "done") completed = true;
           if (event === "error")
             streamFailure = data.message || "The model request failed";
@@ -1647,7 +1744,8 @@ export function Reader({
           (item) =>
             item.kind === artifactKind &&
             item.scope_type === artifactScopeType &&
-            item.scope_id === artifactScopeId,
+            item.scope_id === artifactScopeId &&
+            (artifactScopeType !== 'document' || matchesReadingSource(item.representation_id, runRepresentationId, runPdf)),
         );
         if (artifact) setActiveEntry({ type: "artifact", id: artifact.id });
       }
@@ -1793,7 +1891,8 @@ export function Reader({
         (artifact) =>
           artifact.kind === action &&
           artifact.scope_type === "document" &&
-          artifact.scope_id === documentId,
+          artifact.scope_id === documentId &&
+          matchesReadingSource(artifact.representation_id, representationId, pdfView),
       );
       if (existingArtifact && !regenerate) {
         setDrawer(true);
@@ -1805,7 +1904,8 @@ export function Reader({
         (thread) =>
           thread.action === action &&
           !thread.anchor_id &&
-          !thread.parent_message_id,
+          !thread.parent_message_id &&
+          matchesReadingSource(thread.representation_id, representationId, pdfView),
       );
       const thread =
         existingThread ??
@@ -1814,6 +1914,7 @@ export function Reader({
           body: JSON.stringify({
             documentId,
             title: `${action} of ${doc.title}`,
+            ...(representationId ? {representationId} : {}),
           }),
         }));
       await api(`/api/threads/${thread.id}/messages`, {
@@ -1845,13 +1946,16 @@ export function Reader({
     try {
       if (!(await ensureSavedForAi())) return;
       const reviewModel = reviewModelOverrides[artifact.id] ?? "";
+      const reviewSource = artifact.representation_id ? doc.representations?.find(item => item.id === artifact.representation_id) : htmlRepresentation;
+      const reviewPdf = reviewSource?.kind === 'pdf';
       const retryKey = summaryReviewRequestIdentity({
         artifactId: artifact.id,
         artifactVersion: artifact.version,
-        documentVersionId: doc.version_id,
-        revision: editHistoryRef.current?.currentRevision ?? 0,
+        documentVersionId: sourceDocumentVersion(doc, reviewSource?.id),
+        revision: reviewPdf ? 0 : editHistoryRef.current?.currentRevision ?? 0,
+        ...(reviewPdf ? {representationId: reviewSource.id, extractionRevision: reviewSource.extractionRevision} : {}),
         modelOverride: reviewModel,
-        signals: highlights.map((highlight) => ({
+        signals: highlights.filter(highlight => reviewPdf ? isPdfSelector(highlight.selector) && highlight.selector.representationId === reviewSource.id : !isPdfSelector(highlight.selector)).map((highlight) => ({
           id: highlight.id,
           kind: highlight.kind,
           exactQuote: highlight.exact_quote,
@@ -1880,8 +1984,9 @@ export function Reader({
           "/api/runs",
           {
             requestId,
-            documentVersionId: doc.version_id,
+            documentVersionId: sourceDocumentVersion(doc, reviewSource?.id),
             action: "review-summary",
+            ...(reviewSource ? {representationId: reviewSource.id} : {}),
             input: "",
             artifactScopeType: "document",
             artifactScopeId: documentId,
@@ -2274,7 +2379,8 @@ export function Reader({
         "/api/runs",
         {
           requestId: crypto.randomUUID(),
-          documentVersionId: doc.version_id,
+          documentVersionId: sourceDocumentVersion(doc, thread.representation_id ?? (isPdfSelector(thread.selector) ? thread.selector.representationId : representationId)),
+          ...(thread.representation_id ? {representationId: thread.representation_id} : {}),
           threadId: thread.id,
           anchorId: thread.anchor_id ?? "",
           action: "polish-note",
@@ -2338,6 +2444,7 @@ export function Reader({
           exactQuote: selection.exact,
         }),
       });
+      sessionStorage.removeItem("profread-repair-id");
       sessionStorage.removeItem("afterdraft-repair-id");
       setRepairId("");
       setSelection(null);
@@ -2352,7 +2459,7 @@ export function Reader({
       const value = await api<any>("/api/routing/preview", {
         method: "POST",
         body: JSON.stringify({
-          documentVersionId: doc.version_id,
+          documentVersionId: sourceDocumentVersion(doc, representationId),
           action,
           input:
             action === "ask"
@@ -2613,6 +2720,7 @@ export function Reader({
     [activeEntry, highlights],
   );
   const activeWriter =
+    !pdfView &&
     activeEntry?.type === "writer" &&
     writerWorkspace?.thread.id === activeEntry.id
       ? writerWorkspace
@@ -2625,6 +2733,15 @@ export function Reader({
     setError((current) =>
       current === UNMATCHED_SOURCE_ERROR ? "" : current,
     );
+    if (isPdfSelector(source.selector)) {
+      revealPdfCitation(source.selector);
+      return;
+    }
+    if (pdfView && htmlRepresentation) {
+      pendingSourceNavigation.current = source;
+      switchRepresentation(htmlRepresentation.id);
+      return;
+    }
     const payload = sidebarSourceNavigationPayload(source);
     if (payload)
       iframe.current?.contentWindow?.postMessage(payload, "*");
@@ -2636,6 +2753,48 @@ export function Reader({
   function activateThread(thread: Thread): void {
     setActiveEntry({ type: "thread", id: thread.id });
     navigateToSidebarSource(thread);
+  }
+  function activateArtifact(artifact: Artifact): void {
+    setActiveEntry({type: 'artifact', id: artifact.id});
+    const source = artifact.representation_id ? doc?.representations?.find(item => item.id === artifact.representation_id) : htmlRepresentation;
+    if (source) switchRepresentation(source.id);
+  }
+  function switchRepresentation(id: string) {
+    if (id === representationId || editMode || running) return;
+    closeSelectionPanel();
+    setRepresentationId(id);
+    pdfProgress.current = null;
+    void api(`/api/documents/${documentId}/progress`, {method: 'PUT', body: JSON.stringify({representationId: id})}).catch(error => setError(error.message));
+  }
+  function revealPdfCitation(selector: PdfSelector) {
+    if (selector.representationId === representationId) pdfReader.current?.reveal(selector);
+    else {
+      pendingSourceNavigation.current = selector;
+      switchRepresentation(selector.representationId);
+    }
+  }
+  async function preparePdf() {
+    setPdfEnableOpen(false); setPdfPreparing(true); setError('');
+    try {
+      await api(`/api/documents/${documentId}/pdf`, {method: 'POST', body: JSON.stringify({ocrLanguage: pdfOcrLanguage})});
+      const info = await api<DocumentInfo>(`/api/documents/${documentId}`);
+      setDoc(info);
+      const next = info.representations?.find(item => item.kind === 'pdf');
+      if (next && ['indexing', 'ready', 'partial'].includes(next.status)) {setRepresentationId(next.id); setPdfPreparing(false);}
+    } catch (error) {setPdfPreparing(false); setError((error as Error).message);}
+  }
+  function receivePdfSelection(value: PdfSelection | null) {
+    setSelection(value ? pdfSelectionForReader(value) : null);
+    setSelectionPanel('actions'); setPopoverPosition(null); setQuestion(''); setHighlightKind('important'); setHighlightNote(''); setAskRetry(null);
+  }
+  function receivePdfAnchor(anchorId: string) {
+    closeSelectionPanel(); setDrawer(true);
+    const thread = threads.find(item => item.anchor_id === anchorId);
+    if (thread) setActiveEntry({type: 'thread', id: thread.id});
+    else {
+      const highlight = highlights.find(item => item.anchor_id === anchorId);
+      if (highlight) setActiveEntry({type: 'highlight', id: highlight.id});
+    }
   }
   if (!doc)
     return (
@@ -2651,20 +2810,20 @@ export function Reader({
       const csrf = decodeURIComponent(
         document.cookie
           .split("; ")
-          .find((v) => v.startsWith("afterdraft_csrf="))
+          .find((v) => v.startsWith("profread_csrf="))
           ?.split("=")
           .slice(1)
-          .join("=") ?? "",
+          .join("=") ?? document.cookie.split('; ').find(value => value.startsWith('afterdraft_csrf='))?.split('=').slice(1).join('=') ?? "",
       );
       const response = await fetch(`/api/documents/${documentId}/exports`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-csrf-token": csrf },
-        body: JSON.stringify({ format, fullTranscript }),
+        body: JSON.stringify({ format, fullTranscript, ...(representationId ? {representationId} : {}) }),
       });
       if (!response.ok) throw new Error((await response.json()).error);
       const link = document.createElement("a");
       link.href = URL.createObjectURL(await response.blob());
-      link.download = `${doc?.title ?? "afterdraft"}.${format === "markdown" ? "md" : format}`;
+      link.download = `${doc?.title ?? "ProfRead"}.${format === "markdown" ? "md" : format}`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     } catch (e) {
@@ -2756,11 +2915,11 @@ export function Reader({
   function finishSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
     if (event.currentTarget.hasPointerCapture(event.pointerId))
       event.currentTarget.releasePointerCapture(event.pointerId);
-    document.body.classList.remove("afterdraft-resizing-sidebar");
+    document.body.classList.remove("profread-resizing-sidebar");
   }
   return (
     <main
-      className={`reader-shell ${drawer ? "drawer-open" : ""} ${editMode ? "editing" : ""}`}
+      className={`reader-shell ${drawer ? "drawer-open" : ""} ${editMode ? "editing" : ""} ${pdfView ? 'pdf-view' : ''}`}
     >
       <header className="reader-header">
         <button className="quiet" onClick={backToLibrary}>
@@ -2774,7 +2933,9 @@ export function Reader({
           </span>
         </div>
         <div className="reader-actions">
-          {!editMode && (
+          {(doc.representations?.length ?? 0) > 1 && <label className="reader-representation-select"><span className="sr-only">Reading view</span><select aria-label="Reading view" value={representationId ?? ''} disabled={editMode || Boolean(running)} onChange={event => {setActiveEntry(null); switchRepresentation(event.target.value);}}>{doc.representations?.filter(item => item.kind === 'html' || ['indexing', 'ready', 'partial', 'cancelled', 'failed'].includes(item.status)).map(item => <option key={item.id} value={item.id}>{item.kind === 'pdf' ? `Original PDF${doc.representations!.filter(source => source.kind === 'pdf').length > 1 || item.documentVersionId && item.documentVersionId !== doc.version_id ? ` · v${item.version ?? '?'}` : ''}` : 'HTML'}</option>)}</select></label>}
+          {doc.pdfSourceAvailable && (!pdfRepresentation || pdfRepresentation.status === 'failed') && <button className="quiet" disabled={pdfPreparing || Boolean(running)} onClick={() => setPdfEnableOpen(true)}>{pdfPreparing ? 'Preparing PDF…' : 'Add PDF view'}</button>}
+          {!editMode && !pdfView && (
             <button
               className="quiet mobile-edit-button"
               disabled={Boolean(running)}
@@ -2783,7 +2944,7 @@ export function Reader({
               Edit
             </button>
           )}
-          {!editMode && (
+          {!editMode && !pdfView && (
             <details className="summary-menu">
               <summary>Edit</summary>
               <button disabled={Boolean(running)} onClick={() => void enterEditMode()}>
@@ -2816,20 +2977,21 @@ export function Reader({
           </details>
           <details className="summary-menu">
             <summary>Export</summary>
-            <button onClick={() => download("html")}>HTML</button>
+            {pdfRepresentation && <a href={`/api/representations/${pdfView ? activeRepresentation.id : pdfRepresentation.id}/pdf`} download={`${doc.title}.pdf`}>Original PDF</a>}
+            {(!doc.representations || htmlRepresentation) && <button onClick={() => download("html")}>HTML</button>}
             <button onClick={() => download("pdf")}>PDF</button>
             <button onClick={() => download("markdown")}>Markdown</button>
             <button onClick={() => download("html", true)}>
               HTML + full discussion
             </button>
           </details>
-          <button
+          {!pdfView && <button
             className="quiet"
             disabled={Boolean(running)}
             onClick={() => void openWriter()}
           >
             Writer
-          </button>
+          </button>}
           <button
             className="quiet"
             onClick={() => setDrawer(!drawer)}
@@ -2895,6 +3057,7 @@ export function Reader({
           <button onClick={() => setError("")}>×</button>
         </div>
       )}
+      {pdfEnableOpen && <div className="modal-backdrop"><form className="edit-dialog pdf-enable-dialog" role="dialog" aria-modal="true" aria-labelledby="pdf-enable-title" onSubmit={event => {event.preventDefault(); void preparePdf();}}><header><h2 id="pdf-enable-title">Add original PDF view</h2><button type="button" className="quiet" onClick={() => setPdfEnableOpen(false)}>Close</button></header><p>Read and discuss the retained original PDF. Existing HTML annotations remain available in the HTML view.</p><label>Text recognition language<select value={pdfOcrLanguage} onChange={event => setPdfOcrLanguage(event.target.value as 'eng' | 'eng+kor')}><option value="eng">English</option><option value="eng+kor">English + Korean</option></select></label><small>Text recognition is used for pages without usable embedded text.</small><footer><button type="button" onClick={() => setPdfEnableOpen(false)}>Cancel</button><button className="primary">Prepare PDF view</button></footer></form></div>}
       <div
         className="reader-grid"
         style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
@@ -2909,13 +3072,20 @@ export function Reader({
               : ""
           }`}
         >
-          <iframe
+          {pdfView && representationId ? <PdfReader ref={pdfReader} representationId={representationId} title={doc.title} markers={pdfMarkers} onSelection={receivePdfSelection} onGeometry={rect => setSelection(current => current?.pdfSelector ? {...current, rect} : current)} onAnchorClick={receivePdfAnchor} onProgress={progress => {pdfProgress.current = progress;}} onError={setError} onIndexChange={source => {
+            if (source.extractionRevision === activeRepresentation?.extractionRevision && source.status === activeRepresentation?.status) return;
+            setDoc(current => current?.representations ? {...current, representations: current.representations.map(item => item.id === representationId ? {...item, ...source} : item)} : current);
+            void loadArtifacts().catch(error => setError(error.message));
+          }} onReady={() => {
+            const pending = pendingSourceNavigation.current;
+            if (pending && isPdfSelector(pending)) {pdfReader.current?.reveal(pending); pendingSourceNavigation.current = null;}
+          }}/> : <iframe
             key={contentEpoch}
             ref={iframe}
             title={doc.title}
             src={`/api/versions/${doc.version_id}/content`}
             sandbox="allow-scripts allow-same-origin allow-presentation"
-          />
+          />}
           {selection && selectionPanel === "actions" && (
             <div
               ref={toolbar}
@@ -2943,12 +3113,12 @@ export function Reader({
                     : "Copy"}
                 </button>
               )}
-              {repairId && (
+              {repairId && !pdfView && (
                 <button className="repair-action" onClick={repairAnchor}>
                   Attach annotation here
                 </button>
               )}
-              {!repairId && (
+              {(!repairId || pdfView) && (
                 <select
                   aria-label="Model override"
                   value={modelOverride}
@@ -2965,10 +3135,10 @@ export function Reader({
                   ))}
                 </select>
               )}
-              {!repairId &&
+              {(!repairId || pdfView) &&
                 availableSelectionActions(
                   editMode,
-                  Boolean(selection.exact),
+                  Boolean(selection.exact || selection.pdfSelector),
                 ).map((action) => (
                   <button
                     key={action}
@@ -3056,9 +3226,9 @@ export function Reader({
             >
               <span
                 className="selection-composer-context"
-                title={selection.exact}
+                title={selection.exact || 'Selected PDF region'}
               >
-                {selection.exact}
+                {selection.exact || 'Selected PDF region'}
               </span>
               <select
                 ref={highlightKindSelect}
@@ -3124,7 +3294,7 @@ export function Reader({
           onPointerDown={(event) => {
             event.preventDefault();
             event.currentTarget.setPointerCapture(event.pointerId);
-            document.body.classList.add("afterdraft-resizing-sidebar");
+            document.body.classList.add("profread-resizing-sidebar");
           }}
           onPointerMove={resizeSidebar}
           onPointerUp={finishSidebarResize}
@@ -3148,7 +3318,7 @@ export function Reader({
         >
           <nav className="entry-pane" aria-label="Reader entries">
             <h2>Entries</h2>
-            <button
+            {!pdfView && <button
               className={
                 activeEntry?.type === "writer" ? "active writer-entry" : "writer-entry"
               }
@@ -3161,7 +3331,7 @@ export function Reader({
                   ? `${writerWorkspace.sources.length} sources · ${writerWorkspace.proposals.length} proposals`
                   : "Compose the article"}
               </i>
-            </button>
+            </button>}
             <section>
               <h3>Artifacts</h3>
               {artifacts.length === 0 && <small>None yet</small>}
@@ -3174,11 +3344,9 @@ export function Reader({
                       ? "active"
                       : ""
                   }
-                  onClick={() =>
-                    setActiveEntry({ type: "artifact", id: artifact.id })
-                  }
+                  onClick={() => activateArtifact(artifact)}
                 >
-                  <span>{artifactLabel(artifact)}</span>
+                  <span>{artifactLabel(artifact)}{doc.representations && <small className="pdf-source-note">{artifact.representation_id && !artifact.representation_id.startsWith('html-') ? 'PDF' : 'HTML'}</small>}</span>
                   {artifact.promoted && <i>Pinned</i>}
                 </button>
               ))}
@@ -3197,7 +3365,7 @@ export function Reader({
                   }
                   onClick={() => activateHighlight(highlight)}
                 >
-                  <span>{highlight.note || highlight.exact_quote}</span>
+                  <span>{highlight.note || highlight.exact_quote || 'Selected PDF region'}{doc.representations && <small className="pdf-source-note">{sourceRepresentationLabel(highlight)}</small>}</span>
                   <i>{highlight.kind}</i>
                 </button>
               ))}
@@ -3233,7 +3401,7 @@ export function Reader({
                     }
                     onClick={() => activateThread(thread)}
                   >
-                    <span>{threadEntryLabel(thread)}</span>
+                    <span>{threadEntryLabel(thread)}{doc.representations && thread.anchor_id && <small className="pdf-source-note">{sourceRepresentationLabel(thread)}</small>}</span>
                     {thread.action && <i>{thread.action}</i>}
                   </button>
                 ))}
@@ -3253,7 +3421,7 @@ export function Reader({
                     [activeArtifact.id]: value,
                   }))
                 }
-                onAddToWriter={() =>
+                onAddToWriter={pdfView ? undefined : () =>
                   void addWriterSource("artifact", activeArtifact.id)
                 }
                 onPromote={() =>
@@ -3299,7 +3467,7 @@ export function Reader({
                 onAnchor={() => activateHighlight(activeHighlight)}
                 onSave={updateHighlight}
                 onDelete={deleteHighlight}
-                onAddToWriter={() =>
+                onAddToWriter={pdfView ? undefined : () =>
                   void addWriterSource("highlight", activeHighlight.id)
                 }
               />
@@ -3310,6 +3478,8 @@ export function Reader({
                 thread={activeThread}
                 running={running === activeThread.id}
                 busy={Boolean(running)}
+                writerAvailable={!pdfView}
+                onSourceCitation={citation => revealPdfCitation(citation.selector)}
                 onAnchor={() => activateThread(activeThread)}
                 onNestedAction={nestedAction}
                 onThreadAction={threadAction}
@@ -3345,7 +3515,7 @@ export function Reader({
                 onCopy={copyAnswer}
               />
             )}
-            {activeWriter && (
+            {activeWriter && !pdfView && (
               <WriterPanel
                 workspace={activeWriter}
                 models={models}
@@ -3913,6 +4083,8 @@ function freshnessReason(reason: string): string {
   const labels: Record<string, string> = {
     "document-version-changed": "new document version",
     "document-edits-changed": "document edited",
+    "pdf-extraction-changed": "PDF text index updated",
+    "source-representation-changed": "source view changed",
     "reader-signals-changed": "important highlights or comments changed",
     "missing-basis": "created before update tracking",
   };
@@ -4118,6 +4290,8 @@ export function ThreadCard({
   onAddAnnotationToWriter,
   onAddMessageToWriter,
   onCopy,
+  writerAvailable = true,
+  onSourceCitation,
 }: {
   thread: Thread;
   running: boolean;
@@ -4149,6 +4323,8 @@ export function ThreadCard({
   ) => Promise<boolean>;
   onAddAnnotationToWriter: () => void;
   onAddMessageToWriter: (messageId: string) => void;
+  writerAvailable?: boolean;
+  onSourceCitation?: (citation: SourceCitation) => void;
   onCopy: (text: string) => Promise<void>;
 }) {
   const [annotationBusy, setAnnotationBusy] = useState(false);
@@ -4200,7 +4376,7 @@ export function ThreadCard({
             }
           />
           <footer>
-            {savedAnnotation && (
+            {savedAnnotation && writerAvailable && (
               <button
                 disabled={annotationBusy || busy || annotationDirty}
                 onClick={onAddAnnotationToWriter}
@@ -4260,14 +4436,15 @@ export function ThreadCard({
         <div key={message.id} className={`message ${message.role}`}>
           <span>{message.role === "assistant" ? "ProfRead" : "You"}</span>
           <MarkdownContent content={message.content} />
+          {message.sourceCitations?.length && onSourceCitation ? <div className="source-citation-list" aria-label="PDF sources">{message.sourceCitations.map(citation => <button key={citation.id} onClick={() => onSourceCitation(citation)}>{citation.label}</button>)}</div> : null}
           {message.role === "assistant" && message.id !== "draft" && (
             <div className="message-actions">
-              <button
+              {writerAvailable && <button
                 disabled={busy}
                 onClick={() => onAddMessageToWriter(message.id)}
               >
                 Add to Writer
-              </button>
+              </button>}
               <button
                 onClick={async () => {
                   try {

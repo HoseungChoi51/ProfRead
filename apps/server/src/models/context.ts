@@ -1,4 +1,4 @@
-import type { ContextBundle, ReaderSignal } from '@afterdraft/shared';
+import type { ContextBundle, ReaderSignal } from '@profread/shared';
 import { db,now,row, rows } from '../db/index.js';
 import { contextBehaviorSettings } from './behavior.js';
 
@@ -14,7 +14,7 @@ export function buildContext(documentVersionId:string,profile:string,anchorId?:s
   const anchor=anchorId?row<{exact_quote:string;block_id:string;block_text:string}>('SELECT a.exact_quote,a.block_id,b.text_content block_text FROM anchors a JOIN blocks b ON b.id=a.block_id AND b.document_version_id=a.document_version_id WHERE a.id=?',anchorId):undefined;
   const neighbor=anchor?{text_content:rows<{text_content:string}>('SELECT text_content FROM blocks WHERE document_version_id=? AND ordinal BETWEEN (SELECT ordinal-1 FROM blocks WHERE id=? AND document_version_id=?) AND (SELECT ordinal+1 FROM blocks WHERE id=? AND document_version_id=?) ORDER BY ordinal',documentVersionId,anchor.block_id,documentVersionId,anchor.block_id,documentVersionId).map(item=>item.text_content).join('\n')}:undefined;
   const branch=threadId?activeBranch(threadId,settings.threadAncestorLimit):[];
-  const readerSignals=rows<{id:string;kind:string;note:string|null;exact_quote:string}>(`SELECT h.id,h.kind,h.note,a.exact_quote FROM highlights h JOIN anchors a ON a.id=h.anchor_id WHERE a.document_version_id=? ORDER BY a.start_offset,h.created_at`,documentVersionId).map(item=>({id:item.id,kind:(['important','question','comment'].includes(item.kind)?item.kind:'important') as ReaderSignal['kind'],exactQuote:item.exact_quote,note:item.note}));
+  const readerSignals=rows<{id:string;kind:string;note:string|null;exact_quote:string}>(`SELECT h.id,h.kind,h.note,a.exact_quote FROM highlights h JOIN anchors a ON a.id=h.anchor_id WHERE a.document_version_id=? AND (a.representation_id IS NULL OR a.representation_id IN (SELECT id FROM document_representations WHERE kind='html')) ORDER BY a.start_offset,h.created_at`,documentVersionId).map(item=>({id:item.id,kind:(['important','question','comment'].includes(item.kind)?item.kind:'important') as ReaderSignal['kind'],exactQuote:item.exact_quote,note:item.note}));
   const notes=readerSignals.map(formatReaderSignal),signalTokens=tokens(notes.join('\n')),branchTokens=tokens(JSON.stringify(branch));
   if(tokens(version.canonical_text)<settings.fullArticleThresholdTokens)return {tier:'canonical',article:version.canonical_text,...(anchor?{anchor:anchor.exact_quote||anchor.block_text}:{}),...(neighbor?{neighboringBlock:neighbor.text_content}:{}),branch,readerSignals,curatedNotes:notes,tokenEstimate:tokens(version.canonical_text)+branchTokens+signalTokens};
   const full=tokens(version.canonical_text)+branchTokens+signalTokens+settings.reservedPromptTokens;

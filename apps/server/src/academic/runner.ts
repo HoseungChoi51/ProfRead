@@ -12,6 +12,7 @@ import { assetMime, extractAcademicBundle, extractInspectionBundle, stableAssetI
 import { pdfReferenceEvidence } from './pdf-reference.js';
 import { publishAcademicImport, stagedResultSchema, type StagedAcademicResult } from './persistence.js';
 import { AcademicWorkerError, convertDocx, convertPdf, convertTex, inspectPdf } from './worker-client.js';
+import { publishPdfImport } from '../pdf/import.js';
 import { runArticleBoundary } from './article-boundary.js';
 import type { AcademicSourceKind } from './source-kind.js';
 
@@ -128,11 +129,12 @@ async function prepare(job:AcademicJob,bundle:ExtractedBundle):Promise<{staged:S
 }
 async function run(jobId:string):Promise<void>{
   const claimed=db.prepare("UPDATE import_jobs SET status='converting',stage='converting',progress=0.05,error=NULL,cancel_requested=0,started_at=COALESCE(started_at,?),updated_at=? WHERE id=? AND status='queued'").run(now(),now(),jobId);if(!claimed.changes)return;
-  const job=row<AcademicJob>('SELECT id,source_kind,source_name,source_mime_type,source_path,source_hash,companion_pdf_path,entry_path,status,ai_review_enabled,max_calls,review_concurrency,auto_apply,source_reference,article_title,article_fallback_url,article_ai_boundary,selected_page_start,selected_page_end FROM import_jobs WHERE id=?',jobId)!,
+  const job=row<AcademicJob & {reading_format:string}>('SELECT * FROM import_jobs WHERE id=?',jobId)!,
     controller=new AbortController(),bundleDirectory=join(config.dataDir,'imports',jobId,`bundle-${nanoid(8)}`);controllers.set(jobId,controller);
   try{
     let fallbackBundle:ExtractedBundle|undefined;
-    if(job.source_kind==='pdf'&&job.article_title&&!job.selected_page_start){stage(jobId,'article-inspection','Inspect magazine pages','running',0.08);try{await inspectArticle(job,controller.signal);return}catch(error){if(controller.signal.aborted||!job.article_fallback_url)throw error;fallbackBundle=await articleWebFallback(job,bundleDirectory,controller.signal,`PDF inspection failed: ${error instanceof Error?error.message:String(error)}`)}}
+    if(job.source_kind==='pdf'&&job.article_title&&!job.selected_page_start){stage(jobId,'article-inspection','Inspect magazine pages','running',0.08);try{await inspectArticle(job,controller.signal);return}catch(error){if(controller.signal.aborted||!job.article_fallback_url||job.reading_format==='pdf')throw error;fallbackBundle=await articleWebFallback(job,bundleDirectory,controller.signal,`PDF inspection failed: ${error instanceof Error?error.message:String(error)}`)}}
+    if(job.reading_format==='pdf'){stage(jobId,'pdf-prepare','Prepare original PDF reading','running',0.2);await publishPdfImport(jobId,controller.signal);return;}
     stage(jobId,'conversion','Convert and inventory source','running',0.15);
     let converted=fallbackBundle;
     if(!converted){try{converted=await convert(job,bundleDirectory,controller.signal)}catch(error){if(controller.signal.aborted||!job.article_fallback_url)throw error;await rm(bundleDirectory,{recursive:true,force:true});converted=await articleWebFallback(job,bundleDirectory,controller.signal,`Selected PDF conversion failed: ${error instanceof Error?error.message:String(error)}`)}}

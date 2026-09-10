@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { pdfSelectorSchema } from './pdf.js';
+export * from './pdf.js';
 
 export const protocolSchema = z.enum(['openai-responses', 'chat-completions', 'openrouter']);
 export const capabilitySchema = z.object({
@@ -32,6 +34,8 @@ export const anchorSelectorSchema = z.object({
   blockType: z.enum(['text', 'image', 'svg', 'table', 'diagram', 'video']).default('text'),
 });
 export type AnchorSelector = z.infer<typeof anchorSelectorSchema>;
+export const sourceSelectorSchema = z.union([pdfSelectorSchema, anchorSelectorSchema]);
+export type SourceSelector = z.infer<typeof sourceSelectorSchema>;
 
 export const documentEditOperationSchema=z.discriminatedUnion('type',[
   z.object({type:z.literal('replace-text'),blockId:z.string().min(1),text:z.string().max(100_000)}),
@@ -145,9 +149,11 @@ export const summaryBasisSchema=z.object({
   documentVersionId:z.string().trim().min(1),
   revision:z.number().int().nonnegative(),
   signalHash:z.string().regex(/^[a-f0-9]{64}$/),
+  representationId:z.string().trim().min(1).optional(),
+  extractionRevision:z.number().int().nonnegative().optional(),
 });
 export type SummaryBasis=z.infer<typeof summaryBasisSchema>;
-export const summaryFreshnessReasonSchema=z.enum(['document-version-changed','document-edits-changed','reader-signals-changed','missing-basis']);
+export const summaryFreshnessReasonSchema=z.enum(['document-version-changed','document-edits-changed','reader-signals-changed','pdf-extraction-changed','source-representation-changed','missing-basis']);
 export const summaryFreshnessSchema=z.object({
   status:z.enum(['current','needs-review','unknown']),
   reasons:z.array(summaryFreshnessReasonSchema),

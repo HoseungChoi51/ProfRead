@@ -1,5 +1,5 @@
 {
-  "name": "@afterdraft/web",
+  "name": "@profread/web",
   "version": "0.5.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@afterdraft/shared": "*",
-    "@vitejs/plugin-react": "^5.1.0",
+    "@profread/shared": "*",
+    "@vitejs/plugin-react": "5.1.0",
     "katex": "^0.16.47",
+    "pdfjs-dist": "6.3.289",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",

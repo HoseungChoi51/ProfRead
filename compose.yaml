@@ -1,11 +1,12 @@
+name: profread
 services:
-  afterdraft:
+  profread:
     build: .
     restart: unless-stopped
     init: true
     environment:
-      AFTERDRAFT_PASSWORD: ${AFTERDRAFT_PASSWORD:?set AFTERDRAFT_PASSWORD}
-      AFTERDRAFT_SESSION_SECRET: ${AFTERDRAFT_SESSION_SECRET:?set AFTERDRAFT_SESSION_SECRET}
+      PROFREAD_PASSWORD: ${PROFREAD_PASSWORD:?set PROFREAD_PASSWORD}
+      PROFREAD_SESSION_SECRET: ${PROFREAD_SESSION_SECRET:?set PROFREAD_SESSION_SECRET}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ACADEMIC_WORKER_URL: http://academic-worker:4312
@@ -13,7 +14,7 @@ services:
       academic-worker:
         condition: service_healthy
     volumes:
-      - afterdraft-data:/data
+      - profread-data:/data
     ports:
       - "127.0.0.1:4310:4310"
     stop_grace_period: 30s
@@ -58,8 +59,8 @@ services:
         max-size: "10m"
         max-file: "5"
 volumes:
-  afterdraft-data:
-    name: afterdraft-data
+  profread-data:
+    name: profread-data
 networks:
   academic-worker:
     internal: true

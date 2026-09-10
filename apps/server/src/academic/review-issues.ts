@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import * as cheerio from 'cheerio';
-import { importRepairProposalSchema, type ImportRepairProposal } from '@afterdraft/shared';
+import { importRepairProposalSchema, type ImportRepairProposal } from '@profread/shared';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { db, now, row, rows } from '../db/index.js';

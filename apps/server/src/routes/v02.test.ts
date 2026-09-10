@@ -12,7 +12,7 @@ let csrf='';
 beforeAll(async()=>{
   const login=await app.inject({method:'POST',url:'/api/auth/login',payload:{password:'test-owner-password'}});
   cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; ');
-  csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value;
+  csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value;
 });
 afterAll(()=>app.close());
 

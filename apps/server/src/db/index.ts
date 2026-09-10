@@ -1,4 +1,5 @@
-import { DatabaseSync } from 'node:sqlite';
+import { openProfReadDatabase } from './open.js';
+import { migratePdfSchema } from './pdf-schema.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from '../config.js';
@@ -12,7 +13,7 @@ mkdirSync(join(config.dataDir, 'documents'), { recursive: true });
 mkdirSync(join(config.dataDir, 'exports'), { recursive: true });
 mkdirSync(join(config.dataDir, 'generated'), { recursive: true });
 mkdirSync(join(config.dataDir, 'edits'), { recursive: true });
-export const db = new DatabaseSync(join(config.dataDir, 'afterdraft.sqlite'));
+export const db = openProfReadDatabase(config.dataDir);
 db.exec(schema);
 let blockColumns=db.prepare('PRAGMA table_info(blocks)').all() as Array<{name:string;pk:number}>;
 if(!blockColumns.some(column=>column.name==='visual_data')){db.exec('ALTER TABLE blocks ADD COLUMN visual_data TEXT');blockColumns=db.prepare('PRAGMA table_info(blocks)').all() as Array<{name:string;pk:number}>}
@@ -277,6 +278,7 @@ if(!migration19Applied){
   const foreignKeyErrors=db.prepare('PRAGMA foreign_key_check').all();
   if(foreignKeyErrors.length)throw new Error('Migration 19 failed foreign-key validation');
 }
+migratePdfSchema(db);
 const interruptedAt=new Date().toISOString(),interruptedError='Interrupted by service restart';
 db.exec('BEGIN IMMEDIATE');
 try{

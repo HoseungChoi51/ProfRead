@@ -183,7 +183,7 @@ and bot filters can change independently of ProfRead.
 
 The sidecar is part of the ProfRead Compose lifecycle but stores no durable
 state. SQLite, normalized sources/assets, review evidence retained with each
-import job, and final edits remain in `afterdraft-data`; the existing backup/restore unit is
+import job, and final edits remain in `profread-data`; the existing backup/restore unit is
 therefore unchanged. Back up before migrations, deploy both containers from one
 committed revision, verify the app and worker health endpoints, import both
 private fixtures, then confirm the service through the existing Tailscale HTTPS

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import type { ModelDefinition, ModelProvider } from '@afterdraft/shared';
+import type { ModelDefinition, ModelProvider } from '@profread/shared';
 import { db, now, row } from '../db/index.js';
 import { ChatCompletionsProvider, ResponsesProvider } from '../models/providers.js';
 import { promptTemplate } from '../models/prompts.js';

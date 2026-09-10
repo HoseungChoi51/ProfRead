@@ -15,7 +15,7 @@ afterAll(async()=>{vi.unstubAllGlobals();delete process.env.OPENAI_API_KEY;await
 
 describe('Document Writer',()=>{
   it('snapshots explicit sources, persists a forced-tool proposal, and safely applies only selected changes',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.83',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.83',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Writer lifecycle</title><h1>Writer lifecycle</h1><p>Original body.</p>'),filename:'writer.html',mimeType:'text/html'});
     if(!imported.documentId||!imported.versionId)throw new Error('Writer fixture failed to import');
     const block=row<{id:string;start_offset:number;end_offset:number;text_content:string}>('SELECT id,start_offset,end_offset,text_content FROM blocks WHERE document_version_id=? AND text_content=?',imported.versionId,'Original body.')!,anchorId=randomUUID(),threadId=randomUUID(),messageId=randomUUID(),time=now();

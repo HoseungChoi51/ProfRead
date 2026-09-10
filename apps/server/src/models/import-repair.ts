@@ -6,7 +6,7 @@ import {
   type AcademicRepairBatchProposal,
   type ModelDefinition,
   type ModelProvider,
-} from '@afterdraft/shared';
+} from '@profread/shared';
 import { db, now, row } from '../db/index.js';
 import { ChatCompletionsProvider, ResponsesProvider } from './providers.js';
 import { promptTemplate, renderPrompt } from './prompts.js';

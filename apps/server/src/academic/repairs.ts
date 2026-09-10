@@ -1,10 +1,9 @@
-import * as cheerio from 'cheerio';
 import {
   importRepairProposalSchema,
   type DocumentEditOperation,
   type ImportAuditReport,
   type ImportRepairProposal,
-} from '@afterdraft/shared';
+} from '@profread/shared';
 import { db, now, row, rows } from '../db/index.js';
 
 type Finding = ImportAuditReport['findings'][number];
@@ -67,10 +66,10 @@ function overflows(metric: RenderMetric): boolean {
 }
 
 function targetNode(html: string, targetRef: string): { tag:string; fixedDimensions:boolean; tableScroll:boolean }|null {
-  const $ = cheerio.load(html), node = $('[data-block-id]').filter((_index,element)=>$(element).attr('data-block-id')===targetRef).first();
+  const $ = loadProfreadHtml(html), node = $('[data-block-id]').filter((_index,element)=>$(element).attr('data-block-id')===targetRef).first();
   if (!node.length) return null;
   const tag = node.get(0)!.tagName.toLowerCase(),candidates=[node,...(tag==='figure'?node.find('img,svg,video,table').toArray().map(element=>$(element)):[])],fixedDimensions=candidates.some(candidate=>{const style=candidate.attr('style')??'';return Boolean(candidate.attr('width')||candidate.attr('height'))||/(?:^|;)\s*(?:width|height)\s*:\s*\d+(?:\.\d+)?(?:px|pt|pc|in|cm|mm)\s*(?:!important)?\s*(?:;|$)/i.test(style)});
-  return { tag, fixedDimensions, tableScroll: node.closest('.afterdraft-table-scroll').length > 0 };
+  return { tag, fixedDimensions, tableScroll: node.closest('.profread-table-scroll').length > 0 };
 }
 
 /**
@@ -156,3 +155,4 @@ export function acceptedAcademicRepairPlan(jobId: string): { operations:Document
   operations.sort((left,right)=>JSON.stringify(left).localeCompare(JSON.stringify(right)));
   return { operations, findingIds, signature:JSON.stringify(operations) };
 }
+import { loadProfreadHtml } from '../ingest/branding.js';

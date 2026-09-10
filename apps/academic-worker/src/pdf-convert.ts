@@ -287,23 +287,23 @@ export function renderReadingHtml(layout: PdfLayout, title: string, pageAssets: 
     }
     const renderObject = (object: PublishedObject): string => {
       const caption = object.caption?.text, alt = caption ? caption.slice(0, 500) : `Extracted visual from PDF page ${page.number}`;
-      return `<figure class="pdf-extracted-object" data-afterdraft-source-ref="pdf:p${String(page.number).padStart(3, '0')}:${object.id}" data-afterdraft-enlargeable><img src="${escapeHtml(object.assetPath)}" alt="${escapeHtml(alt)}" loading="lazy">${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`;
+      return `<figure class="pdf-extracted-object" data-profread-source-ref="pdf:p${String(page.number).padStart(3, '0')}:${object.id}" data-profread-enlargeable><img src="${escapeHtml(object.assetPath)}" alt="${escapeHtml(alt)}" loading="lazy">${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`;
     };
     for (let index = 0; index <= blocks.length; index++) {
       for (const object of (objectSlots.get(index) ?? []).sort((left, right) => left.top - right.top || left.left - right.left)) content.push(renderObject(object));
       const block = blocks[index]; if (!block || block.spanIds.some(id => consumedCaptions.has(id))) continue;
       const sourceRef = `pdf:p${String(page.number).padStart(3, '0')}:${block.spanIds[0]}-${block.spanIds.at(-1)}`, text = escapeHtml(block.text);
-      if (block.kind === 'heading') { const level = headingLevel(block, baseSize, page.number === layout.pages[0]?.number ? 1 : page.number); content.push(`<h${level} data-afterdraft-source-ref="${sourceRef}">${text}</h${level}>`) }
-      else if (block.kind === 'caption') content.push(`<p class="pdf-unassociated-caption" data-afterdraft-source-ref="${sourceRef}">${text}</p>`);
-      else if (block.kind === 'list') content.push(`<p class="pdf-list-item" data-afterdraft-source-ref="${sourceRef}">${text}</p>`);
-      else content.push(`<p data-afterdraft-source-ref="${sourceRef}">${text}</p>`);
+      if (block.kind === 'heading') { const level = headingLevel(block, baseSize, page.number === layout.pages[0]?.number ? 1 : page.number); content.push(`<h${level} data-profread-source-ref="${sourceRef}">${text}</h${level}>`) }
+      else if (block.kind === 'caption') content.push(`<p class="pdf-unassociated-caption" data-profread-source-ref="${sourceRef}">${text}</p>`);
+      else if (block.kind === 'list') content.push(`<p class="pdf-list-item" data-profread-source-ref="${sourceRef}">${text}</p>`);
+      else content.push(`<p data-profread-source-ref="${sourceRef}">${text}</p>`);
     }
     const visualOnly = blocks.reduce((sum, block) => sum + block.text.length, 0) < 40, pageAsset = pageAssets.get(page.number);
-    const fallback = pageAsset ? `<details class="pdf-source-page" data-afterdraft-source-ref="pdf:p${String(page.number).padStart(3, '0')}:source-page"><summary>Original PDF page ${page.number}</summary><figure data-afterdraft-enlargeable><img src="${escapeHtml(pageAsset)}" alt="Original PDF page ${page.number}" loading="lazy"><figcaption>Original PDF page ${page.number}</figcaption></figure></details>` : '';
+    const fallback = pageAsset ? `<details class="pdf-source-page" data-profread-source-ref="pdf:p${String(page.number).padStart(3, '0')}:source-page"><summary>Original PDF page ${page.number}</summary><figure data-profread-enlargeable><img src="${escapeHtml(pageAsset)}" alt="Original PDF page ${page.number}" loading="lazy"><figcaption>Original PDF page ${page.number}</figcaption></figure></details>` : '';
     const notice = visualOnly ? '<p class="pdf-visual-fallback-note">This page has little or no native text. Open the original page image below for the complete visual source.</p>' : '';
     return `<section class="pdf-page" data-pdf-page="${page.number}" aria-label="PDF page ${page.number}">${notice}${content.join('\n')}${fallback}</section>`;
   }).join('\n');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>.afterdraft-pdf{max-width:72rem;margin:auto}.pdf-page{margin:0 0 3rem}.pdf-page+.pdf-page{padding-top:2rem;border-top:1px solid #d8d4ca}.pdf-extracted-object{margin:1.5rem auto}.pdf-source-page{margin:2rem 0;padding:.6rem;border:1px solid #d8d4ca;background:#f8f6ef}.pdf-source-page>summary{cursor:pointer;font:600 .85rem ui-sans-serif,system-ui,sans-serif}.pdf-source-page figure{margin:1rem 0 0}.pdf-source-page img{display:block;width:100%;height:auto}.pdf-visual-fallback-note,.pdf-unassociated-caption{color:#5d5a52;font-size:.9em}.pdf-list-item{padding-left:1.25rem}</style></head><body><article class="afterdraft-pdf">${body}</article></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>.profread-pdf{max-width:72rem;margin:auto}.pdf-page{margin:0 0 3rem}.pdf-page+.pdf-page{padding-top:2rem;border-top:1px solid #d8d4ca}.pdf-extracted-object{margin:1.5rem auto}.pdf-source-page{margin:2rem 0;padding:.6rem;border:1px solid #d8d4ca;background:#f8f6ef}.pdf-source-page>summary{cursor:pointer;font:600 .85rem ui-sans-serif,system-ui,sans-serif}.pdf-source-page figure{margin:1rem 0 0}.pdf-source-page img{display:block;width:100%;height:auto}.pdf-visual-fallback-note,.pdf-unassociated-caption{color:#5d5a52;font-size:.9em}.pdf-list-item{padding-left:1.25rem}</style></head><body><article class="profread-pdf">${body}</article></body></html>`;
 }
 
 async function finalize(root: string, bundle: string, manifest: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
@@ -314,7 +314,7 @@ async function finalize(root: string, bundle: string, manifest: Record<string, u
 export async function convertPdf(body: Buffer, options: { filename: string; includeReference?: boolean; referencePages?: number; pageStart?: number; pageEnd?: number; title?: string; signal?: AbortSignal }): Promise<OperationResult> {
   if (body.byteLength > pdfConversionInputLimit) throw new WorkerError('body_too_large', 'PDF source exceeds the 100 MiB conversion limit.', 413);
   if (!hasPdfHeader(body)) throw new WorkerError('invalid_pdf', 'The source does not start with a PDF header.', 422);
-  const root = await mkdtemp(join(tmpdir(), 'afterdraft-pdf-convert-')), input = join(root, 'source.pdf'), bundle = join(root, 'bundle'), pageRenders = join(root, 'page-renders');
+  const root = await mkdtemp(join(tmpdir(), 'profread-pdf-convert-')), input = join(root, 'source.pdf'), bundle = join(root, 'bundle'), pageRenders = join(root, 'page-renders');
   await mkdir(bundle, { recursive: true }); await mkdir(pageRenders, { recursive: true }); await writeFile(input, body, { mode: 0o600 });
   try {
     const attempts: Attempt[] = [], infoResult = await runCommand('pdfinfo', [input], { cwd: root, signal: options.signal, timeoutMs: 30_000 }); attempts.push(attempt(infoResult)); const info = parsePdfInfo(infoResult.stdout), layoutPath = join(root, 'layout.xml');
@@ -357,7 +357,7 @@ export async function convertPdf(body: Buffer, options: { filename: string; incl
       output: { entryPath: 'document.html', title, inventory },
       warnings,
     };
-    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'afterdraft-pdf-bundle.zip' };
+    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'profread-pdf-bundle.zip' };
   } catch (error) { await rm(root, { recursive: true, force: true }); throw error }
 }
 
@@ -424,7 +424,7 @@ export function detectArticleRange(layout: PdfLayout, title: string): { suggesti
 export async function inspectPdf(body: Buffer, options: { filename: string; title: string; signal?: AbortSignal }): Promise<OperationResult> {
   if (body.byteLength > pdfConversionInputLimit) throw new WorkerError('body_too_large', 'PDF source exceeds the 100 MiB inspection limit.', 413);
   if (!hasPdfHeader(body)) throw new WorkerError('invalid_pdf', 'The source does not start with a PDF header.', 422);
-  const root = await mkdtemp(join(tmpdir(), 'afterdraft-pdf-inspect-')), input = join(root, 'source.pdf'), bundle = join(root, 'bundle'), renders = join(root, 'page-renders');
+  const root = await mkdtemp(join(tmpdir(), 'profread-pdf-inspect-')), input = join(root, 'source.pdf'), bundle = join(root, 'bundle'), renders = join(root, 'page-renders');
   await mkdir(bundle, { recursive: true }); await mkdir(renders, { recursive: true }); await mkdir(join(bundle, 'pages'), { recursive: true }); await writeFile(input, body, { mode: 0o600 });
   try {
     const attempts: Attempt[] = [], infoResult = await runCommand('pdfinfo', [input], { cwd: root, signal: options.signal, timeoutMs: 30_000 }); attempts.push(attempt(infoResult));
@@ -449,6 +449,6 @@ export async function inspectPdf(body: Buffer, options: { filename: string; titl
       output: { entryPath: 'inspection.json', title: options.title.trim(), pageCount: info.pages },
       inventory: { pages: info.pages, thumbnails: pages.length }, warnings: [],
     };
-    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'afterdraft-pdf-inspection.zip' };
+    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'profread-pdf-inspection.zip' };
   } catch (error) { await rm(root, { recursive: true, force: true }); throw error }
 }

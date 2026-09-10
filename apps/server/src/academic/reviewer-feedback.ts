@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { academicReviewIssueDecisionSchema, type AcademicReviewIssueDecision } from '@afterdraft/shared';
+import { academicReviewIssueDecisionSchema, type AcademicReviewIssueDecision } from '@profread/shared';
 import { db, now, row, rows } from '../db/index.js';
 
 export const reviewerFeedbackInputSchema=z.object({

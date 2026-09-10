@@ -6,7 +6,7 @@ describe('converter subprocess environment', () => {
     const previous = process.env.OPENAI_API_KEY; process.env.OPENAI_API_KEY = 'must-not-leak';
     try {
       const result = await runCommand('env', [], { cwd: '/tmp' });
-      expect(result.stdout).toContain('HOME=/tmp/afterdraft-worker-home');
+      expect(result.stdout).toContain('HOME=/tmp/profread-worker-home');
       expect(result.stdout).not.toContain('must-not-leak');
       expect(result.stdout).not.toContain('OPENAI_API_KEY');
     } finally { if (previous === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previous; }

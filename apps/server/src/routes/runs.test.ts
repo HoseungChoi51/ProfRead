@@ -30,7 +30,7 @@ describe('annotation candidates',()=>{
 
 describe('polish-note runs',()=>{
   it('streams and audits the result without adding a discussion message or artifact',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.71',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.71',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Polish note</title><p>A claim worth annotating.</p>'),filename:'polish.html',mimeType:'text/html'});
     if(!imported.documentId||!imported.versionId)throw new Error('Import did not create a document');
     const unscoped=await app.inject({method:'POST',url:'/api/runs',headers,payload:{requestId:randomUUID(),documentVersionId:imported.versionId,action:'polish-note',input:'orphan draft'}});
@@ -53,7 +53,7 @@ describe('polish-note runs',()=>{
   });
 
   it('stores document summary provenance from the same reader signals sent to the model',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.72',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.72',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Summary basis</title><p>The decisive evidence is in this sentence.</p>'),filename:'summary-basis.html',mimeType:'text/html'});
     if(!imported.documentId||!imported.versionId)throw new Error('Import did not create a document');
     const block=row<{id:string;start_offset:number;end_offset:number;text_content:string}>('SELECT id,start_offset,end_offset,text_content FROM blocks WHERE document_version_id=? AND block_type=\'text\' ORDER BY ordinal LIMIT 1',imported.versionId)!,anchorId=randomUUID(),time=now();
@@ -76,7 +76,7 @@ describe('polish-note runs',()=>{
 
 describe('semantic summary-review runs',()=>{
   it('rejects an over-window review before provider work using the complete forced-tool request estimate',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.77',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.77',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Review fit</title><p>The current summary predates an important reader signal.</p>'),filename:'review-fit.html',mimeType:'text/html'});if(!imported.documentId||!imported.versionId)throw new Error('Review fit fixture failed');
     const artifactId=randomUUID(),basis=summaryBasis(imported.versionId),time=now();db.prepare(`INSERT INTO artifacts(id,document_version_id,kind,version,scope_type,scope_id,content_json,source_refs_json,promoted,basis_document_version_id,basis_revision,basis_signal_hash,created_at)
       VALUES(?,?,'tldr',1,'document',?,?,?,0,?,?,?,?)`).run(artifactId,imported.versionId,imported.documentId,JSON.stringify('- A short existing summary.'),JSON.stringify([imported.versionId]),basis.documentVersionId,basis.revision,basis.signalHash,time);
@@ -92,7 +92,7 @@ describe('semantic summary-review runs',()=>{
   });
 
   it('forces one structured review call, applies KEEP with CAS, and replays without another provider call',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.74',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.74',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Review route</title><p>The complete article already supports the concise conclusion.</p>'),filename:'review-route.html',mimeType:'text/html'});
     if(!imported.documentId||!imported.versionId)throw new Error('Review route fixture failed to import');
     const artifactId=randomUUID(),originalBasis=summaryBasis(imported.versionId),time=now();
@@ -117,7 +117,7 @@ describe('semantic summary-review runs',()=>{
   });
 
   it('fails a tool-call run that reaches EOF before provider completion without mutating the review target',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.75',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.75',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Review EOF</title><p>The article supports the stored summary.</p>'),filename:'review-eof.html',mimeType:'text/html'});if(!imported.documentId||!imported.versionId)throw new Error('Review EOF fixture failed');
     const artifactId=randomUUID(),basis=summaryBasis(imported.versionId),time=now();db.prepare(`INSERT INTO artifacts(id,document_version_id,kind,version,scope_type,scope_id,content_json,source_refs_json,promoted,basis_document_version_id,basis_revision,basis_signal_hash,created_at)
       VALUES(?,?,'tldr',1,'document',?,?,?,0,?,?,?,?)`).run(artifactId,imported.versionId,imported.documentId,JSON.stringify('- Stored summary'),JSON.stringify([imported.versionId]),basis.documentVersionId,basis.revision,basis.signalHash,time);
@@ -129,7 +129,7 @@ describe('semantic summary-review runs',()=>{
   });
 
   it('can semantically review a short generated half-page and apply a valid Korean replacement',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.76',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.76',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const imported=await importSource({buffer:Buffer.from('<title>Generated legacy summary</title><p>An important conclusion belongs in the summary.</p>'),filename:'generated-legacy-summary.html',mimeType:'text/html'});if(!imported.documentId||!imported.versionId)throw new Error('Generated legacy summary fixture failed');
     vi.stubGlobal('fetch',vi.fn(async()=>providerResponse(['data: {"type":"response.output_text.delta","delta":"A short generated half-page."}\n\n','data: {"type":"response.completed","response":{"id":"half-page-response","status":"completed"}}\n\n'])));
     const generated=await app.inject({method:'POST',url:'/api/runs',headers,payload:{requestId:randomUUID(),documentVersionId:imported.versionId,action:'half-page',input:'',artifactScopeType:'document',artifactScopeId:imported.documentId}});expect(generated.body).toContain('event: done');
@@ -142,7 +142,7 @@ describe('semantic summary-review runs',()=>{
 
 describe('run scope integrity',()=>{
   it('rejects invalid relational tuples before a provider call or artifact write, then accepts matched scopes',async()=>{
-    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.73',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='afterdraft_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
+    const login=await app.inject({method:'POST',url:'/api/auth/login',remoteAddress:'127.0.0.73',payload:{password:'test-owner-password'}}),cookie=login.cookies.map(item=>`${item.name}=${item.value}`).join('; '),csrf=login.cookies.find(item=>item.name==='profread_csrf')!.value,headers={cookie,'x-csrf-token':csrf};
     const first=await importSource({buffer:Buffer.from(`<title>Scope one</title><p>First scoped passage ${randomUUID()}</p>`),filename:'scope-one.html',mimeType:'text/html'}),second=await importSource({buffer:Buffer.from(`<title>Scope two</title><p>Second scoped passage ${randomUUID()}</p>`),filename:'scope-two.html',mimeType:'text/html'});
     if(!first.documentId||!first.versionId||!second.documentId||!second.versionId)throw new Error('Scope fixtures failed to import');
     const anchorOne=addAnchor(first.versionId),alternateAnchor=addAnchor(first.versionId),anchorTwo=addAnchor(second.versionId);

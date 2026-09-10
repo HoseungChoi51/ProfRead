@@ -9,7 +9,7 @@ import {
   type WriterProposalChange,
   type WriterProposalResult,
   type WriterProposalToolInput,
-} from '@afterdraft/shared';
+} from '@profread/shared';
 import { db, now, row, rows } from '../db/index.js';
 import { effectiveVersion } from '../edits/effective.js';
 import { promptTemplate, renderPrompt } from './prompts.js';

@@ -7,10 +7,12 @@ import {
   type SummaryBasis,
   type SummaryFreshness,
   type SummaryReviewResult,
-} from '@afterdraft/shared';
+  type PdfSelector,
+} from '@profread/shared';
 import { nanoid } from 'nanoid';
 import { db, now, row, rows } from '../db/index.js';
 import { promptTemplate, renderPrompt } from './prompts.js';
+import {pdfPages, representation} from '../pdf/repository.js';
 
 export type SummaryArtifactKind = 'tldr' | 'half-page' | 'visual-recap';
 export type SummaryReviewTerminalStatus = 'applied' | 'superseded' | 'failed' | 'cancelled';
@@ -20,6 +22,7 @@ export type SummaryReviewSignal = {
   kind: 'important' | 'comment';
   exactQuote: string;
   note: string | null;
+  selector?: PdfSelector;
 };
 
 type StoredSummaryArtifact = {
@@ -37,6 +40,8 @@ type StoredSummaryArtifact = {
   basis_document_version_id: string | null;
   basis_revision: number | null;
   basis_signal_hash: string | null;
+  representation_id: string | null;
+  basis_extraction_revision: number | null;
 };
 
 type StoredReview = {
@@ -69,6 +74,8 @@ export type SummaryReviewSnapshot = {
   signals: SummaryReviewSignal[];
   basis: SummaryBasis;
   freshness: SummaryFreshness;
+  representationId?: string;
+  extractionRevision?: number;
 };
 
 type AuditedSummaryReviewSnapshot = Omit<SummaryReviewSnapshot, 'article'>;
@@ -151,31 +158,41 @@ export const summaryReviewTool={name:summaryReviewToolName,schema:strictObject({
 
 const summaryKinds = new Set<SummaryArtifactKind>(['tldr', 'half-page', 'visual-recap']);
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
-const sameBasis = (left: SummaryBasis, right: SummaryBasis) => left.documentVersionId === right.documentVersionId && left.revision === right.revision && left.signalHash === right.signalHash;
+const sameBasis = (left: SummaryBasis, right: SummaryBasis) => left.documentVersionId === right.documentVersionId && left.revision === right.revision && left.signalHash === right.signalHash && left.representationId === right.representationId && left.extractionRevision === right.extractionRevision;
 
-function reviewSignals(documentVersionId: string): SummaryReviewSignal[] {
-  return rows<{ id: string; kind: string; exact_quote: string; note: string | null }>(`SELECT h.id,h.kind,a.exact_quote,h.note
+function reviewSignals(documentVersionId: string, representationId?: string): SummaryReviewSignal[] {
+  return rows<{ id: string; kind: string; exact_quote: string; note: string | null; selector_json: string | null }>(`SELECT h.id,h.kind,a.exact_quote,h.note,a.selector_json
     FROM highlights h JOIN anchors a ON a.id=h.anchor_id
-    WHERE a.document_version_id=? AND h.kind IN ('important','comment') ORDER BY h.id`, documentVersionId).map(signal => ({
+    WHERE a.document_version_id=? AND h.kind IN ('important','comment') AND
+      ${representationId ? 'a.representation_id=?' : "(a.representation_id IS NULL OR a.representation_id IN (SELECT id FROM document_representations WHERE kind='html'))"}
+    ORDER BY h.id`, documentVersionId, ...(representationId ? [representationId] : [])).map(signal => ({
     id: signal.id,
     kind: signal.kind as SummaryReviewSignal['kind'],
     exactQuote: signal.exact_quote,
     note: signal.note?.trim() || null,
+    ...(representationId && signal.selector_json ? {selector: JSON.parse(signal.selector_json) as PdfSelector} : {}),
   }));
 }
 
-export function summaryBasis(documentVersionId: string): SummaryBasis {
+export function summaryBasis(documentVersionId: string, representationId?: string): SummaryBasis {
   if (!row('SELECT id FROM document_versions WHERE id=?', documentVersionId)) throw new SummaryReviewError('Document version not found', 404);
+  const source = representationId ? representation(representationId) : undefined;
+  if (representationId && (!source || source.document_version_id !== documentVersionId)) throw new SummaryReviewError('Summary source does not belong to this document version', 409);
+  if (source?.kind === 'pdf') return summaryBasisSchema.parse({documentVersionId, revision: 0, signalHash: sha256(JSON.stringify(reviewSignals(documentVersionId, source.id))), representationId: source.id, extractionRevision: source.extraction_revision});
   const revision = row<{ revision: number }>('SELECT COALESCE(MAX(revision),0) revision FROM document_edit_revisions WHERE document_version_id=?', documentVersionId)?.revision ?? 0;
   const signalHash = sha256(JSON.stringify(reviewSignals(documentVersionId)));
   return summaryBasisSchema.parse({ documentVersionId, revision, signalHash });
 }
 
-export function summaryFreshness(artifact: Pick<StoredSummaryArtifact, 'basis_document_version_id' | 'basis_revision' | 'basis_signal_hash'>, current: SummaryBasis): SummaryFreshness {
+export function summaryFreshness(artifact: Pick<StoredSummaryArtifact, 'basis_document_version_id' | 'basis_revision' | 'basis_signal_hash'> & Partial<Pick<StoredSummaryArtifact, 'representation_id' | 'basis_extraction_revision'>>, current: SummaryBasis): SummaryFreshness {
   if (artifact.basis_document_version_id === null || artifact.basis_revision === null || artifact.basis_signal_hash === null) return { status: 'unknown', reasons: ['missing-basis'] };
+  if (current.representationId && artifact.basis_extraction_revision == null) return {status: 'unknown', reasons: ['missing-basis']};
   const reasons: SummaryFreshness['reasons'] = [];
   if (artifact.basis_document_version_id !== current.documentVersionId) reasons.push('document-version-changed');
-  if (artifact.basis_revision !== current.revision) reasons.push('document-edits-changed');
+  if (current.representationId) {
+    if (artifact.representation_id !== current.representationId) reasons.push('source-representation-changed');
+    if (artifact.basis_extraction_revision !== current.extractionRevision) reasons.push('pdf-extraction-changed');
+  } else if (artifact.basis_revision !== current.revision) reasons.push('document-edits-changed');
   if (artifact.basis_signal_hash !== current.signalHash) reasons.push('reader-signals-changed');
   return { status: reasons.length ? 'needs-review' : 'current', reasons };
 }
@@ -201,7 +218,7 @@ function validateStoredSummaryArtifactContent(kind:SummaryArtifactKind,content:u
   return content.trim();
 }
 
-export function prepareSummaryReview(input: { artifactId: string; expectedArtifactVersion: number; documentId: string; documentVersionId: string }): SummaryReviewSnapshot {
+export function prepareSummaryReview(input: { artifactId: string; expectedArtifactVersion: number; documentId: string; documentVersionId: string; representationId?: string }): SummaryReviewSnapshot {
   if (!Number.isInteger(input.expectedArtifactVersion) || input.expectedArtifactVersion < 1) throw new SummaryReviewError('Expected artifact version must be a positive integer', 400);
   const artifact = row<StoredSummaryArtifact>(`SELECT a.*,v.document_id artifact_document_id
     FROM artifacts a JOIN document_versions v ON v.id=a.document_version_id WHERE a.id=?`, input.artifactId);
@@ -213,11 +230,19 @@ export function prepareSummaryReview(input: { artifactId: string; expectedArtifa
       v.canonical_text
     ) canonical_text FROM document_versions v WHERE v.document_id=? ORDER BY v.version DESC LIMIT 1`, input.documentId);
   if (!latest) throw new SummaryReviewError('Artifact document not found', 404);
-  if (latest.id !== input.documentVersionId) throw new SummaryReviewError('Summary review must use the latest document version', 409);
+  const boundPdf = artifact.representation_id ? representation(artifact.representation_id) : undefined;
+  const basisVersionId = boundPdf?.kind === 'pdf' ? boundPdf.document_version_id : latest.id;
+  if (basisVersionId !== input.documentVersionId) throw new SummaryReviewError(boundPdf?.kind === 'pdf' ? 'Summary review must use its source document version' : 'Summary review must use the latest document version', 409);
   if (artifact.version !== input.expectedArtifactVersion) throw new SummaryReviewError('Summary artifact changed; reload before reviewing', 409);
-  const basis = summaryBasis(latest.id), freshness = summaryFreshness(artifact, basis);
+  const source = artifact.representation_id ? representation(artifact.representation_id) : undefined;
+  const requestedSource = input.representationId ? representation(input.representationId) : undefined;
+  if (input.representationId && (!requestedSource || requestedSource.document_version_id !== basisVersionId)) throw new SummaryReviewError('Summary review source does not belong to this document version', 409);
+  if (input.representationId && representation(input.representationId)?.kind === 'pdf' && input.representationId !== source?.id) throw new SummaryReviewError('Summary review source does not match the artifact', 409);
+  if (input.representationId && source?.kind === 'pdf' && input.representationId !== source.id) throw new SummaryReviewError('Summary review source does not match the artifact', 409);
+  const pdfSource = source?.kind === 'pdf' ? source : undefined;
+  const basis = summaryBasis(basisVersionId, pdfSource?.id), freshness = summaryFreshness(artifact, basis);
   if (freshness.status === 'current') throw new SummaryReviewError('Summary is already current', 409);
-  const signals = reviewSignals(latest.id);
+  const signals = reviewSignals(basisVersionId, pdfSource?.id);
   if (signals.length > 200) throw new SummaryReviewError('Summary review supports at most 200 Important and Comment signals', 422);
   const artifactKind = artifact.kind as SummaryArtifactKind;
   let artifactContent: unknown, sourceRefs: string[];
@@ -230,6 +255,13 @@ export function prepareSummaryReview(input: { artifactId: string; expectedArtifa
     if (error instanceof SummaryReviewError) throw error;
     throw new SummaryReviewError('Stored summary artifact is invalid', 422);
   }
+  let article = latest.canonical_text;
+  if (pdfSource) {
+    const pages = pdfPages(pdfSource.id, basis.extractionRevision);
+    if (!pages.some(page => page.text.trim())) throw new SummaryReviewError('PDF text is still being indexed; selected-region questions are available while it is prepared', 409);
+    const indexed = pages.filter(page => page.textStatus === 'native' || page.textStatus === 'ocr').length;
+    article = `[Original PDF source ${pdfSource.id}; extraction revision ${basis.extractionRevision}; indexed text ${indexed}/${pages.length} pages. Unindexed page content is unavailable; do not infer it.]\n\n` + pages.map(page => `[PDF page ${page.sourcePage}${page.label ? `; printed page ${page.label}` : ''}; text ${page.textStatus}]\n${page.transcript ?? (page.text || '(No indexed text available on this page)')}`).join('\n\n');
+  }
   return {
     artifactId: artifact.id,
     artifactVersion: artifact.version,
@@ -237,9 +269,10 @@ export function prepareSummaryReview(input: { artifactId: string; expectedArtifa
     artifactContent,
     sourceRefs,
     documentId: input.documentId,
-    documentVersionId: latest.id,
-    article: latest.canonical_text,
-    articleHash: sha256(latest.canonical_text),
+    documentVersionId: basisVersionId,
+    article,
+    articleHash: sha256(article),
+    ...(pdfSource ? {representationId: pdfSource.id, extractionRevision: basis.extractionRevision!} : {}),
     signals,
     basis,
     freshness,
@@ -364,7 +397,7 @@ function replacementFor(snapshot: AuditedSummaryReviewSnapshot, result: SummaryR
   content = validateSummaryArtifactContent(snapshot.artifactKind, content);
   const recapRefs = snapshot.artifactKind === 'visual-recap' && typeof content === 'object' && content !== null && Array.isArray((content as { sourceRefs?: unknown }).sourceRefs)
     ? (content as { sourceRefs: string[] }).sourceRefs : [];
-  return { content, sourceRefs: [...new Set([snapshot.basis.documentVersionId, ...recapRefs])] };
+  return { content, sourceRefs: [...new Set([snapshot.basis.representationId ?? snapshot.basis.documentVersionId, ...recapRefs])] };
 }
 
 function terminalOutcome(reviewId: string): SummaryReviewOutcome {
@@ -389,7 +422,10 @@ export function finalizeSummaryReview(input: { reviewId: string; result: unknown
     const artifact = row<StoredSummaryArtifact>(`SELECT a.*,v.document_id artifact_document_id
       FROM artifacts a JOIN document_versions v ON v.id=a.document_version_id WHERE a.id=?`, snapshot.artifactId);
     const latest = row<{ id: string }>('SELECT id FROM document_versions WHERE document_id=? ORDER BY version DESC LIMIT 1', snapshot.documentId);
-    const currentBasis = latest ? summaryBasis(latest.id) : undefined;
+    const boundSource = snapshot.basis.representationId ? representation(snapshot.basis.representationId) : undefined;
+    const basisVersionId = boundSource?.kind === 'pdf' ? boundSource.document_version_id : latest?.id;
+    const sourceStillCurrent = !snapshot.basis.representationId || boundSource?.document_version_id === snapshot.basis.documentVersionId;
+    const currentBasis = basisVersionId && sourceStillCurrent ? summaryBasis(basisVersionId, snapshot.basis.representationId) : undefined;
     const artifactChanged = !artifact || artifact.version !== snapshot.artifactVersion;
     const basisChanged = !currentBasis || !sameBasis(currentBasis, snapshot.basis);
     if (artifactChanged || basisChanged) {
@@ -411,14 +447,14 @@ export function finalizeSummaryReview(input: { reviewId: string; result: unknown
       return outcome;
     }
 
-    const time = now(), nextVersion = snapshot.artifactVersion + 1;
+    const time = now(), nextVersion = row<{next: number}>('SELECT COALESCE(MAX(version),0)+1 next FROM artifacts WHERE kind=? AND scope_type=\'document\' AND scope_id=?', snapshot.artifactKind, snapshot.documentId)!.next;
     let changed = 0;
     if (parsedResult.decision === 'KEEP') {
-      changed = Number(db.prepare(`UPDATE artifacts SET document_version_id=?,version=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?
-        WHERE id=? AND version=?`).run(snapshot.basis.documentVersionId, nextVersion, snapshot.basis.documentVersionId, snapshot.basis.revision, snapshot.basis.signalHash, snapshot.artifactId, snapshot.artifactVersion).changes);
+      changed = Number(db.prepare(`UPDATE artifacts SET document_version_id=?,version=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?,basis_extraction_revision=?
+        WHERE id=? AND version=?`).run(snapshot.basis.documentVersionId, nextVersion, snapshot.basis.documentVersionId, snapshot.basis.revision, snapshot.basis.signalHash, snapshot.basis.extractionRevision ?? null, snapshot.artifactId, snapshot.artifactVersion).changes);
     } else {
-      changed = Number(db.prepare(`UPDATE artifacts SET document_version_id=?,version=?,content_json=?,source_refs_json=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?,created_at=?
-        WHERE id=? AND version=?`).run(snapshot.basis.documentVersionId, nextVersion, JSON.stringify(replacement!.content), JSON.stringify(replacement!.sourceRefs), snapshot.basis.documentVersionId, snapshot.basis.revision, snapshot.basis.signalHash, time, snapshot.artifactId, snapshot.artifactVersion).changes);
+      changed = Number(db.prepare(`UPDATE artifacts SET document_version_id=?,version=?,content_json=?,source_refs_json=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?,basis_extraction_revision=?,created_at=?
+        WHERE id=? AND version=?`).run(snapshot.basis.documentVersionId, nextVersion, JSON.stringify(replacement!.content), JSON.stringify(replacement!.sourceRefs), snapshot.basis.documentVersionId, snapshot.basis.revision, snapshot.basis.signalHash, snapshot.basis.extractionRevision ?? null, time, snapshot.artifactId, snapshot.artifactVersion).changes);
       if (changed) {
         db.prepare("DELETE FROM search_index WHERE kind='artifact' AND entity_id=?").run(snapshot.artifactId);
         db.prepare(`INSERT INTO search_index(kind,entity_id,document_id,title,body,tags,model_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).run('artifact', snapshot.artifactId, snapshot.documentId, snapshot.artifactKind, typeof replacement!.content === 'string' ? replacement!.content : JSON.stringify(replacement!.content), '', input.modelId, time);
@@ -458,7 +494,7 @@ export function latestSummaryReview(artifactId: string): LatestSummaryReview | u
     sourceStatus: replay.outcome?.sourceStatus ?? null,
     modelId: review.model_id ?? null,
     artifactVersion: replay.outcome?.artifactVersion ?? review.artifact_version,
-    basis: { documentVersionId: review.document_version_id, revision: review.basis_revision, signalHash: review.basis_signal_hash },
+    basis: replay.snapshot.basis,
     createdAt: review.created_at,
     appliedAt: review.applied_at,
   };

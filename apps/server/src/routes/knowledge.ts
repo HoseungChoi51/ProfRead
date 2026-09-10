@@ -3,16 +3,17 @@ import { nanoid } from 'nanoid';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { diagramSpecSchema, type SummaryBasis, type SummaryFreshness } from '@afterdraft/shared';
+import { diagramSpecSchema, type SummaryBasis, type SummaryFreshness } from '@profread/shared';
 import { config } from '../config.js';
 import { db, now, row, rows } from '../db/index.js';
 import { utf16ContextWindow } from '../anchors/context.js';
 import { latestSummaryReview, summaryBasis, summaryFreshness, validateSummaryArtifactContent } from '../models/summary-review.js';
+import {representation} from '../pdf/repository.js';
 
 export { summaryBasis } from '../models/summary-review.js';
-export type { SummaryBasis } from '@afterdraft/shared';
+export type { SummaryBasis } from '@profread/shared';
 
-const artifactSchema=z.object({documentVersionId:z.string().trim().min(1),kind:z.enum(['tldr','half-page','compact','visual-recap','diagram']),scopeType:z.enum(['document','section','answer','thread']),scopeId:z.string().trim().min(1),content:z.unknown(),sourceRefs:z.array(z.string()).min(1),promoted:z.boolean().default(false)});
+const artifactSchema=z.object({documentVersionId:z.string().trim().min(1),representationId:z.string().trim().min(1).optional(),kind:z.enum(['tldr','half-page','compact','visual-recap','diagram']),scopeType:z.enum(['document','section','answer','thread']),scopeId:z.string().trim().min(1),content:z.unknown(),sourceRefs:z.array(z.string()).min(1),promoted:z.boolean().default(false)});
 const singletonKinds=new Set(['tldr','half-page','visual-recap']);
 const basisKinds=new Set(['tldr','half-page','visual-recap']);
 
@@ -20,6 +21,7 @@ type StoredArtifact={
   id:string;document_version_id:string;kind:string;version:number;scope_type:string;scope_id:string;
   content_json:string;source_refs_json:string;promoted:number;created_at:string;
   basis_document_version_id:string|null;basis_revision:number|null;basis_signal_hash:string|null;
+  representation_id:string|null;basis_extraction_revision:number|null;
 };
 type ArtifactInput=z.infer<typeof artifactSchema>;
 type ScopeError={status:400|404;error:string};
@@ -54,6 +56,28 @@ function latestVersion(documentId:string):{id:string}|undefined{
   return row<{id:string}>('SELECT id FROM document_versions WHERE document_id=? ORDER BY version DESC LIMIT 1',documentId);
 }
 
+function artifactRepresentationId(input:ArtifactInput):string|null{
+  let anchored:string|null|undefined;
+  if(input.scopeType==='section')anchored=row<{representation_id:string|null}>('SELECT representation_id FROM anchors WHERE id=?',input.scopeId)?.representation_id;
+  if(input.scopeType==='thread')anchored=row<{representation_id:string|null}>('SELECT COALESCE(t.representation_id,a.representation_id) representation_id FROM threads t LEFT JOIN anchors a ON a.id=t.anchor_id WHERE t.id=?',input.scopeId)?.representation_id;
+  if(input.scopeType==='answer')anchored=row<{representation_id:string|null}>('SELECT COALESCE(t.representation_id,a.representation_id) representation_id FROM messages m JOIN threads t ON t.id=m.thread_id LEFT JOIN anchors a ON a.id=t.anchor_id WHERE m.id=?',input.scopeId)?.representation_id;
+  if(input.representationId&&anchored&&input.representationId!==anchored)throw new Error('Artifact source does not match its anchored scope');
+  const requested=input.representationId??anchored;
+  const source=requested?representation(requested):undefined;
+  if(requested&&(!source||source.document_version_id!==input.documentVersionId))throw new Error('Artifact source does not belong to this document version');
+  if(source)return source.kind==='pdf'?source.id:null;
+  const version=row<{sanitized_html_path:string|null}>('SELECT sanitized_html_path FROM document_versions WHERE id=?',input.documentVersionId);
+  if(version?.sanitized_html_path)return null;
+  const pdf=row<{id:string}>("SELECT id FROM document_representations WHERE document_version_id=? AND kind='pdf'",input.documentVersionId);
+  if(!pdf)throw new Error('The document source is not ready');
+  return pdf.id;
+}
+
+function currentArtifactBasis(versionId:string,artifact:Pick<StoredArtifact,'representation_id'>):SummaryBasis{
+  const source=artifact.representation_id?representation(artifact.representation_id):undefined;
+  return summaryBasis(source?.kind==='pdf'?source.document_version_id:versionId,source?.kind==='pdf'?source.id:undefined);
+}
+
 function serializeArtifact(artifact:StoredArtifact,currentBasis:SummaryBasis|undefined){
   const tracksBasis=artifact.scope_type==='document'&&basisKinds.has(artifact.kind);
   return{
@@ -79,8 +103,7 @@ export function registerKnowledgeRoutes(app:FastifyInstance):void{
   app.get('/api/documents/:id/artifacts',async(request,reply)=>{
     const documentId=(request.params as{id:string}).id,currentVersion=latestVersion(documentId);
     if(!currentVersion)return reply.code(404).send({error:'Document not found'});
-    const currentBasis=summaryBasis(currentVersion.id);
-    return rows<StoredArtifact>(`SELECT a.* FROM artifacts a JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND (a.kind NOT IN ('tldr','half-page','visual-recap') OR a.version=(SELECT MAX(newer.version) FROM artifacts newer WHERE newer.kind=a.kind AND newer.scope_type=a.scope_type AND newer.scope_id=a.scope_id)) ORDER BY a.created_at DESC`,documentId).map(artifact=>serializeArtifact(artifact,currentBasis));
+    return rows<StoredArtifact>(`SELECT a.* FROM artifacts a JOIN document_versions v ON v.id=a.document_version_id WHERE v.document_id=? AND (a.kind NOT IN ('tldr','half-page','visual-recap') OR a.version=(SELECT MAX(newer.version) FROM artifacts newer WHERE newer.kind=a.kind AND newer.scope_type=a.scope_type AND newer.scope_id=a.scope_id AND newer.representation_id IS a.representation_id)) ORDER BY a.created_at DESC`,documentId).map(artifact=>serializeArtifact(artifact,currentArtifactBasis(currentVersion.id,artifact)));
   });
 
   app.post('/api/artifacts',async(request,reply)=>{
@@ -90,22 +113,22 @@ export function registerKnowledgeRoutes(app:FastifyInstance):void{
     if(!version)return reply.code(404).send({error:'Document version not found'});
     const scopeError=validateArtifactScope(parsed.data,version.document_id);
     if(scopeError)return reply.code(scopeError.status).send({error:scopeError.error});
-    let content;
-    try{content=validateContent(parsed.data.kind,parsed.data.content)}catch(error){return reply.code(422).send({error:(error as Error).message})}
-    const basis=parsed.data.scopeType==='document'&&basisKinds.has(parsed.data.kind)?summaryBasis(parsed.data.documentVersionId):undefined;
-    const time=now(),existing=singletonKinds.has(parsed.data.kind)?row<{id:string;version:number}>('SELECT id,version FROM artifacts WHERE kind=? AND scope_type=? AND scope_id=? ORDER BY version DESC LIMIT 1',parsed.data.kind,parsed.data.scopeType,parsed.data.scopeId):undefined;
-    const artifactVersion=existing?existing.version+1:(row<{next:number}>('SELECT COALESCE(MAX(version),0)+1 next FROM artifacts WHERE kind=? AND scope_type=? AND scope_id=?',parsed.data.kind,parsed.data.scopeType,parsed.data.scopeId)?.next??1),id=existing?.id??nanoid();
-    if(existing)db.prepare('UPDATE artifacts SET document_version_id=?,version=?,content_json=?,source_refs_json=?,promoted=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?,created_at=? WHERE id=? AND version=?').run(parsed.data.documentVersionId,artifactVersion,JSON.stringify(content),JSON.stringify(parsed.data.sourceRefs),parsed.data.promoted?1:0,basis?.documentVersionId??null,basis?.revision??null,basis?.signalHash??null,time,id,existing.version);
-    else db.prepare('INSERT INTO artifacts(id,document_version_id,kind,version,scope_type,scope_id,content_json,source_refs_json,promoted,basis_document_version_id,basis_revision,basis_signal_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,parsed.data.documentVersionId,parsed.data.kind,artifactVersion,parsed.data.scopeType,parsed.data.scopeId,JSON.stringify(content),JSON.stringify(parsed.data.sourceRefs),parsed.data.promoted?1:0,basis?.documentVersionId??null,basis?.revision??null,basis?.signalHash??null,time);
+    let content,representationId:string|null;
+    try{content=validateContent(parsed.data.kind,parsed.data.content);representationId=artifactRepresentationId(parsed.data)}catch(error){return reply.code(422).send({error:(error as Error).message})}
+    const basis=parsed.data.scopeType==='document'&&basisKinds.has(parsed.data.kind)?summaryBasis(parsed.data.documentVersionId,representationId??undefined):undefined;
+    const time=now(),existing=singletonKinds.has(parsed.data.kind)?row<{id:string;version:number}>('SELECT id,version FROM artifacts WHERE kind=? AND scope_type=? AND scope_id=? AND representation_id IS ? ORDER BY version DESC LIMIT 1',parsed.data.kind,parsed.data.scopeType,parsed.data.scopeId,representationId):undefined;
+    const artifactVersion=row<{next:number}>('SELECT COALESCE(MAX(version),0)+1 next FROM artifacts WHERE kind=? AND scope_type=? AND scope_id=?',parsed.data.kind,parsed.data.scopeType,parsed.data.scopeId)?.next??1,id=existing?.id??nanoid();
+    if(existing)db.prepare('UPDATE artifacts SET document_version_id=?,version=?,content_json=?,source_refs_json=?,promoted=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?,basis_extraction_revision=?,created_at=? WHERE id=? AND version=?').run(parsed.data.documentVersionId,artifactVersion,JSON.stringify(content),JSON.stringify(parsed.data.sourceRefs),parsed.data.promoted?1:0,basis?.documentVersionId??null,basis?.revision??null,basis?.signalHash??null,basis?.extractionRevision??null,time,id,existing.version);
+    else db.prepare('INSERT INTO artifacts(id,document_version_id,kind,version,scope_type,scope_id,content_json,source_refs_json,promoted,basis_document_version_id,basis_revision,basis_signal_hash,representation_id,basis_extraction_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,parsed.data.documentVersionId,parsed.data.kind,artifactVersion,parsed.data.scopeType,parsed.data.scopeId,JSON.stringify(content),JSON.stringify(parsed.data.sourceRefs),parsed.data.promoted?1:0,basis?.documentVersionId??null,basis?.revision??null,basis?.signalHash??null,representationId,basis?.extractionRevision??null,time);
     if(existing)db.prepare("DELETE FROM search_index WHERE kind='artifact' AND entity_id=?").run(id);
     db.prepare('INSERT INTO search_index(kind,entity_id,document_id,title,body,tags,model_id,created_at) VALUES(?,?,?,?,?,?,?,?)').run('artifact',id,version.document_id,parsed.data.kind,typeof content==='string'?content:JSON.stringify(content),'','',time);
-    return reply.code(existing?200:201).send({id,version:artifactVersion,...parsed.data,content,createdAt:time,...(basis?{basis}:{}),...(basis?{freshness:{status:'current',reasons:[]}}:{})});
+    return reply.code(existing?200:201).send({id,version:artifactVersion,...parsed.data,representationId,content,createdAt:time,...(basis?{basis}:{}),...(basis?{freshness:{status:'current',reasons:[]}}:{})});
   });
 
   app.post('/api/artifacts/:id/accept-current-basis',async(request,reply)=>{
     const parsed=z.object({expectedArtifactVersion:z.number().int().positive()}).safeParse(request.body);
     if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()});
-    const artifact=row<Pick<StoredArtifact,'id'|'kind'|'scope_type'|'scope_id'|'version'>>('SELECT id,kind,scope_type,scope_id,version FROM artifacts WHERE id=?',(request.params as{id:string}).id);
+    const artifact=row<Pick<StoredArtifact,'id'|'kind'|'scope_type'|'scope_id'|'version'|'representation_id'>>('SELECT id,kind,scope_type,scope_id,version,representation_id FROM artifacts WHERE id=?',(request.params as{id:string}).id);
     if(!artifact)return reply.code(404).send({error:'Artifact not found'});
     if(artifact.scope_type!=='document'||!basisKinds.has(artifact.kind))return reply.code(409).send({error:'Artifact does not support freshness tracking'});
     if(artifact.version!==parsed.data.expectedArtifactVersion)return reply.code(409).send({error:'Summary artifact changed; reload before keeping it'});
@@ -115,7 +138,9 @@ export function registerKnowledgeRoutes(app:FastifyInstance):void{
     try{
       const locked=row<{version:number}>('SELECT version FROM artifacts WHERE id=?',artifact.id),latest=latestVersion(artifact.scope_id);
       if(!locked||locked.version!==parsed.data.expectedArtifactVersion||!latest){db.exec('ROLLBACK');return reply.code(409).send({error:'Summary artifact or document changed; reload before keeping it'})}
-      const basis=summaryBasis(latest.id),version=locked.version+1,result=db.prepare('UPDATE artifacts SET document_version_id=?,version=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=? WHERE id=? AND version=?').run(latest.id,version,basis.documentVersionId,basis.revision,basis.signalHash,artifact.id,locked.version);
+      const source=artifact.representation_id?representation(artifact.representation_id):undefined;
+      const basisVersionId=source?.kind==='pdf'?source.document_version_id:latest.id;
+      const basis=summaryBasis(basisVersionId,source?.kind==='pdf'?source.id:undefined),version=row<{next:number}>('SELECT COALESCE(MAX(version),0)+1 next FROM artifacts WHERE kind=? AND scope_type=? AND scope_id=?',artifact.kind,artifact.scope_type,artifact.scope_id)!.next,result=db.prepare('UPDATE artifacts SET document_version_id=?,version=?,basis_document_version_id=?,basis_revision=?,basis_signal_hash=?,basis_extraction_revision=? WHERE id=? AND version=?').run(basisVersionId,version,basis.documentVersionId,basis.revision,basis.signalHash,basis.extractionRevision??null,artifact.id,locked.version);
       if(!result.changes){db.exec('ROLLBACK');return reply.code(409).send({error:'Summary artifact changed; reload before keeping it'})}
       db.exec('COMMIT');
       return{ok:true,version,basis,freshness:{status:'current',reasons:[]} as SummaryFreshness};

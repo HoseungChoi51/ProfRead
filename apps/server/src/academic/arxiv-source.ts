@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fetchArxivBundle, fetchArxivPdf, type ArxivBundle } from './arxiv.js';
 import { pdfReferenceEvidence } from './pdf-reference.js';
@@ -23,10 +23,12 @@ async function arxivSource(job:AcademicJob,directory:string,signal:AbortSignal):
   const pdfPath=join(directory,'arxiv-reference.pdf');
   try{
     const pdf=await fetchArxivPdf(reference,{signal,maxBytes:64*1024*1024});await writeFile(pdfPath,pdf.bytes,{mode:0o600,flag:'wx'});
+    result.manifest.source.originalPdfPath='arxiv-reference.pdf';result.manifest.source.originalPdfHash=sha256(pdf.bytes);
+    result.files.push({path:'arxiv-reference.pdf',storagePath:pdfPath,bytes:pdf.bytes.length,sha256:sha256(pdf.bytes)});
     const rendered=await pdfReferenceEvidence(pdfPath,directory,signal);result.files.push(...rendered.files);result.manifest.warnings.push(...rendered.warnings);
   }catch(error){
     result.manifest.warnings.push({code:'arxiv_reference_failed',severity:'warning',message:`The official arXiv PDF could not be rendered for visual comparison: ${error instanceof Error?error.message:String(error)}`});
-  }finally{await rm(pdfPath,{force:true}).catch(()=>{})}
+  }
   return result;
 }
 

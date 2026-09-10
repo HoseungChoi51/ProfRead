@@ -48,7 +48,7 @@ async function referenceThumbnails(docx: string, root: string, bundle: string, p
 }
 
 export async function convertDocx(body: Buffer, options: ConversionOptions): Promise<OperationResult> {
-  const root = await mkdtemp(join(tmpdir(), 'afterdraft-docx-')), input = join(root, 'source.docx'), bundle = join(root, 'bundle'); await mkdir(bundle); await writeFile(input, body, { mode: 0o600 });
+  const root = await mkdtemp(join(tmpdir(), 'profread-docx-')), input = join(root, 'source.docx'), bundle = join(root, 'bundle'); await mkdir(bundle); await writeFile(input, body, { mode: 0o600 });
   try {
     const inventory = await inventoryDocx(input), warnings = [...inventory.warnings], attempts: Attempt[] = [];
     const titleProbe = await runCommand('pandoc', [input, '--from=docx+styles', '--to=plain', '--wrap=none', '--track-changes=accept'], { cwd: bundle, signal: options.signal, timeoutMs: 180_000, allowFailure: true }); attempts.push(cleanAttempt(titleProbe));
@@ -68,7 +68,7 @@ export async function convertDocx(body: Buffer, options: ConversionOptions): Pro
     if (outputInventory.images !== inventory.drawings) warnings.push({ code: 'figure_count_mismatch', severity: 'warning', message: 'The converted image count differs from the OOXML drawing inventory.', evidence: { source: inventory.drawings, converted: outputInventory.images } });
     if (outputInventory.tables !== inventory.tables) warnings.push({ code: 'table_count_mismatch', severity: 'warning', message: 'The converted table count differs from the OOXML source inventory.', evidence: { source: inventory.tables, converted: outputInventory.tables } });
     const manifest = { schemaVersion: 1, operation: 'convert', source: { kind: 'docx', filename: safeFilename(options.filename, 'document.docx'), bytes: body.byteLength, sha256: sha256Bytes(body) }, converter: { selected: 'pandoc', attempts }, output: { entryPath: 'document.html', title: pageTitle, inventory: outputInventory }, inventory, warnings };
-    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'afterdraft-docx-bundle.zip' };
+    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'profread-docx-bundle.zip' };
   } catch (error) { await import('node:fs/promises').then(module => module.rm(root, { recursive: true, force: true })); throw error; }
 }
 
@@ -82,7 +82,7 @@ function selectTexEntry(project: string, candidates: string[], sources: Readonly
   if (candidates.length === 1) return candidates[0]!; const entryChoices=candidates.map(path=>relative(project,path).split(sep).join('/')).sort();throw new WorkerError('entry_required',`Choose a TeX entry: ${entryChoices.join(', ')}`,409,{entryChoices});
 }
 export async function convertTex(body: Buffer, options: ConversionOptions): Promise<OperationResult> {
-  const root = await mkdtemp(join(tmpdir(), 'afterdraft-tex-')), project = join(root, 'project'), bundle = join(root, 'bundle'); await mkdir(project); await mkdir(bundle);
+  const root = await mkdtemp(join(tmpdir(), 'profread-tex-')), project = join(root, 'project'), bundle = join(root, 'bundle'); await mkdir(project); await mkdir(bundle);
   try {
     const archive = body[0] === 0x50 && body[1] === 0x4b;
     if (archive) { const upload = join(root, 'project.zip'); await writeFile(upload, body, { mode: 0o600 }); await scanZip(upload, { extractTo: project }); }
@@ -97,6 +97,6 @@ export async function convertTex(body: Buffer, options: ConversionOptions): Prom
     else selected = 'pandoc';
     if (selected === 'pandoc') { warnings.push({ code: 'latexml_fallback', severity: 'warning', message: 'LaTeXML failed; Pandoc produced the browsing derivative.' }); const fallback = await runCommand('pandoc', [entry, '--from=latex', '--to=html5', '--standalone', '--mathml', '--wrap=none', `--resource-path=${dirname(entry)}:${project}`, '--extract-media=assets', '--output=document.html'], { cwd: bundle, signal: options.signal, timeoutMs: 180_000 }); attempts.push(cleanAttempt(fallback)); }
     const manifest = { schemaVersion: 1, operation: 'convert', source: { kind: archive ? 'tex-project-zip' : 'tex', filename: safeFilename(options.filename, 'source.tex'), entry: posix.normalize(relative(project, entry).split(sep).join('/')), bytes: body.byteLength, sha256: sha256Bytes(body) }, converter: { selected, attempts }, output: { entryPath: 'document.html' }, warnings };
-    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'afterdraft-tex-bundle.zip' };
+    return { root, archivePath: await finalize(root, bundle, manifest, options.signal), downloadName: 'profread-tex-bundle.zip' };
   } catch (error) { await import('node:fs/promises').then(module => module.rm(root, { recursive: true, force: true })); throw error; }
 }

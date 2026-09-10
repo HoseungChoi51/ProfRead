@@ -1,6 +1,6 @@
 # ProfRead
 
-ProfRead is a private, self-hosted web app for reading imported HTML
+ProfRead is a private, self-hosted web app for reading original PDFs and HTML
 articles with context-aware LLM explanations, recursive follow-up discussions,
 curated annotations, and durable study artifacts.
 
@@ -18,8 +18,9 @@ diagnostics and optional bounded LLM/VLM review.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for the full
 architecture, interaction contracts, milestones, and acceptance tests.
-The current feature and migration details are in the
-[v0.5.0 release notes](docs/releases/v0.5.0.md).
+The coexisting PDF feature, source guarantees, and rollout gates are in the
+[PDF reader development plan](docs/pdf-reader-plan.md). Earlier importer changes
+are recorded in the [v0.5.0 release notes](docs/releases/v0.5.0.md).
 
 ## Product direction
 
@@ -58,6 +59,10 @@ Run `npm test`, `npm run typecheck`, and `npm run build` before deployment. See
 [deployment and recovery](docs/deployment.md) for Docker, backup, and restore
 instructions.
 
+Existing AfterDraft deployments must follow the [ProfRead migration runbook](docs/profread-migration.md)
+before starting the renamed Compose project, so their library, credentials,
+and recovery history move together.
+
 ## Prompt templates
 
 Source-controlled prompt defaults and their descriptions live in
@@ -66,4 +71,4 @@ library's **AI settings → Prompt templates** panel can override each component
 without rebuilding the application. The editor lists the allowed
 `{{variables}}`, validates required and unknown placeholders, and can reset any
 override to its source default. Overrides are stored in SQLite and therefore
-follow the normal `afterdraft-data` backup and restore contract.
+follow the normal `profread-data` backup and restore contract.

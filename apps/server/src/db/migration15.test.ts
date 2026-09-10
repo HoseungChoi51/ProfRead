@@ -37,7 +37,7 @@ describe('migration 15',()=>{
       process.env.AFTERDRAFT_SESSION_SECRET='test-session-secret-with-more-than-thirty-two-characters';
       await import(${JSON.stringify(moduleUrl)});
       const {DatabaseSync}=await import('node:sqlite');
-      const db=new DatabaseSync(${JSON.stringify(databasePath)});
+      const db=new DatabaseSync(${JSON.stringify(join(dataDir,'profread.sqlite'))});
       console.log(JSON.stringify({migrationCount:db.prepare('SELECT count(*) AS count FROM migrations WHERE version=15').get().count,statuses:Object.fromEntries(db.prepare('SELECT id,status FROM anchors ORDER BY id').all().map(anchor=>[anchor.id,anchor.status]))}));
     `,run=()=>spawnSync(process.execPath,['--import','tsx','--input-type=module','--eval',script],{cwd:resolve('.'),encoding:'utf8',timeout:5000}),first=run();
     expect(first.status,first.stderr).toBe(0);

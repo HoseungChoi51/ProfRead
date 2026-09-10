@@ -70,6 +70,10 @@ async function materializeConverted(source:NormalizedPublishedJats|NormalizedPub
     $('img[src],source[src]').each((_i,element)=>{const node=$(element),raw=node.attr('src')??'',asset=byRef.get(raw)??byRef.get(basename(raw));if(asset)node.attr('src',asset.sourcePath)});
     const html=Buffer.from($.html());await writeFile(entry.storagePath,html,{mode:0o600});entry.bytes=html.byteLength;entry.sha256=sha256(html);for(const asset of source.assets)bundle.files.push(await addFile(directory,asset.sourcePath,asset.bytes));
   }
+  if(source.kind==='pdf'){
+    bundle.manifest.source.originalPdfPath=source.filename;bundle.manifest.source.originalPdfHash=source.provenance.contentSha256;
+    bundle.files.push({path:source.filename,storagePath:sourcePath,bytes:source.bytes.byteLength,sha256:source.provenance.contentSha256});
+  }
   await rewriteConvertedManifest(bundle,source,locatorHash);return bundle;
 }
 
